@@ -26,14 +26,9 @@ This repo implements only the single primitive model, which can perform 99.0% of
     curl -fsSL https://pixi.sh/install.sh | bash
     ```
 
-    The following command sets up the virtual environment and installs the dependencies:
+    The following command installs the dependencies and activate the virtual environment:
     ```
-    pixi install
-    ```
-
-    Activate the virtual environment to proceed:
-    ```
-    pixi shellafter
+    pixi shell
     ```
 
 3. Install Isaac Gym and gymtorch. Download and unzip Isaac Gym from [here](https://developer.nvidia.com/isaac-gym). Then. install isaacgym by running the following command inside the virtual environment:
