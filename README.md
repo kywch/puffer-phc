@@ -78,6 +78,17 @@ This repo implements only the single primitive model, which can perform 99.0% of
     To adjust the sweep parameters and range, edit the `config.ini` file. You might need to comment/uncomment some parts in the `train.py` script, `sweep_carbs()` function to make the sweep work.
 
 
+# Notes
+* `python scripts/train.py --help` shows the full list of options for the environment and training, which allows you to override the defaults in the config file.
+* I tested the [style discriminator](https://arxiv.org/abs/2104.02180) in the original PHC repo and here, saw that it did not improve the imitation performance, so turned it off in the config. To enable it, set `use_amp_obs` to True in the config, or add `--use-amp-obs True` to the command.
+* I saw several times that "fine-tuning" pretrained weights with `-c <CHECKPOINT PATH>` resulted in much faster learning. The [L2 init reg loss](https://arxiv.org/abs/2308.11958) is being logged in the wandb dashboard, and you can see greater L2 distance when learning from scratch compared to fine-tuning.
+* As mentioned in the [PHC paper](https://arxiv.org/abs/2305.06456), I saw that the 6-layer MLP perform better than shallow MLPs, and SiLU activations perform better than ReLUs.
+* Adding LayerNorm before the last layer tamed the gradient norm, and I swept the hyperparameters with the max grad norm of 5.0 (the original PHC repo uses 50). 
+* Observations are RMS normalized, but the rewards/values are not. The gamma was set to 0.98 to manage the value loss. The hyperparameter sweeps consistently converged to small lambda values, so I chose 0.2.
+* Also, the sweeps consistently converged to very aggressive clip coefs (0.01) and higher learning rates. I speculate that since the trainer uses the same learning rate for both actor and critic, it's using actor clipping to slow down the actor learning relative to the critic.
+* I tried using LSTM for both the actor and critic, respectively, and it didn't work better. These LSTM policies are included in the code, so feel free to try them.
+
+
 # References
 This repository is built on top of the following amazing repositories:
 
