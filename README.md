@@ -96,4 +96,4 @@ This repository is built on top of the following amazing repositories:
 * The PPO and CARBS sweep code is from: [PufferLib](https://github.com/PufferAI/PufferLib)
 * Sample motion data is from: [CMU Motion Capture Dataset](http://mocap.cs.cmu.edu/), Subject 5, Motion 6 
 
-Please follow the lisence of the above repositories for usage.
+Please follow the license of the above repositories for usage.
