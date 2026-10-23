@@ -4,6 +4,8 @@ experiments/
 output/
 pixi.lock
 wandb/
+eval_summary_*.json
+results_by_motion_*.tsv
 
 
 # Byte-compiled / optimized / DLL files

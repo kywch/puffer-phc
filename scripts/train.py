@@ -661,10 +661,12 @@ if __name__ == "__main__":
         eval_stats = EvalStats(vec_env)
         rollout(vec_env, policy, eval_stats)
 
-        with open(f"eval_summary_{datetime.now().strftime('%m%d_%H%M')}.json", "w") as f:
+        out_dir = os.path.dirname(args["checkpoint_path"] or "")
+        ts = datetime.now().strftime("%m%d_%H%M")
+        with open(os.path.join(out_dir, f"eval_summary_{ts}.json"), "w") as f:
             json.dump(eval_stats.results, f, indent=4)
 
         df = pl.DataFrame(eval_stats.results_by_motion)
-        df.write_csv(f"results_by_motion_{datetime.now().strftime('%m%d_%H%M')}.tsv", separator="\t")
+        df.write_csv(os.path.join(out_dir, f"results_by_motion_{ts}.tsv"), separator="\t")
 
         eval_stats.update_env_and_close()
