@@ -56,7 +56,7 @@ This repo implements only the single primitive model, which can perform 99.0% of
     python scripts/train.py --config config.ini -m <MOTION FILE PATH>
     ```
 
-    The script supports wandb logging. To use wandb, log in to wandb, then add `--track` to the command.
+    Add `--track` to log locally to Aim under `experiments/.aim`; view with `pixi run aim up --repo experiments --host 127.0.0.1 --port 43800`. Merge runs from another machine: `pixi run aim runs --repo <other>/experiments cp --destination experiments <run_hash>`.
 
     To prepare your own motion data, please see the `convert_amass_data.py` script in the `scripts` folder. After conversion, you can visually inspect the data with the `vis_motion_mj.py` script.
 
@@ -77,11 +77,13 @@ This repo implements only the single primitive model, which can perform 99.0% of
 
     To adjust the sweep parameters and range, edit the `config.ini` file. You might need to comment/uncomment some parts in the `train.py` script, `sweep_carbs()` function to make the sweep work.
 
+    `--mode sweep` requires `--tag <name>`; every sweep trial is tracked and tagged in Aim. Filter in the Aim UI/search with `"<name>" in run.tags`.
+
 
 # Notes
 * `python scripts/train.py --help` shows the full list of options for the environment and training, which allows you to override the defaults in the config file.
 * I tested the [style discriminator](https://arxiv.org/abs/2104.02180) in the original PHC repo and here, saw that it did not improve the imitation performance, so turned it off in the config. To enable it, set `use_amp_obs` to True in the config, or add `--use-amp-obs True` to the command.
-* I saw several times that "fine-tuning" pretrained weights with `-c <CHECKPOINT PATH>` resulted in much faster learning. The [L2 init reg loss](https://arxiv.org/abs/2308.11958) is being logged in the wandb dashboard, and you can see greater L2 distance when learning from scratch compared to fine-tuning.
+* I saw several times that "fine-tuning" pretrained weights with `-c <CHECKPOINT PATH>` resulted in much faster learning. The [L2 init reg loss](https://arxiv.org/abs/2308.11958) is being logged in the training dashboard, and you can see greater L2 distance when learning from scratch compared to fine-tuning.
 * As mentioned in the [PHC paper](https://arxiv.org/abs/2305.06456), I saw that the 6-layer MLP perform better than shallow MLPs, and SiLU activations perform better than ReLUs.
 * Adding LayerNorm before the last layer tamed the gradient norm, and I [swept the hyperparameters](https://wandb.ai/kywch/carbs/sweeps/fupc0sps?nw=nwuserkywch) with the max grad norm of 10 (the original PHC repo uses 50). 
 * Observations are RMS normalized, but the rewards/values are not. The gamma was set to 0.98 to manage the value loss. The hyperparameter sweeps consistently converged to small lambda values, so I chose 0.2.

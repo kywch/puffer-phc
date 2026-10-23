@@ -62,7 +62,7 @@ pixi run python scripts/train.py -m data/amass_train_take6_upright.pkl \
 pixi run python scripts/train.py --mode eval -c ckpt_amass_800m_acc97.pt -m data/amass_train_take6_upright.pkl
 ```
 
-Any `[section] key` in `config.ini` can be overridden as `--section.key-name`. Add `--track` for WandB.
+Any `[section] key` in `config.ini` can be overridden as `--section.key-name`. Add `--track` to log locally to Aim under `experiments/.aim`; view with `pixi run aim up --repo experiments --host 127.0.0.1 --port 43800`. Merge runs from another machine: `pixi run aim runs --repo <other>/experiments cp --destination experiments <run_hash>`. `--mode sweep` requires `--tag <name>` (every trial is tracked and tagged); filter in the Aim UI/search with `"<name>" in run.tags`.
 
 `--mode play` opens an Isaac Gym viewer and needs X11; it has not been set up here.
 

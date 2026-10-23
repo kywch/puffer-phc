@@ -223,31 +223,32 @@ def make_policy(env, policy_cls, rnn_cls, args):
     return policy.to(args["train"]["device"])
 
 
-def init_wandb(args, name, resume=True):
-    import wandb
+def init_run(args):
+    import aim
 
     exp_id = args["env_name"] + "-" + str(uuid.uuid4())[:8]
-    wandb.init(
-        id=exp_id,
-        project=args["wandb_project"],
-        allow_val_change=True,
-        save_code=True,
-        resume=resume,
-        config=args,
-        name=name,
+    run = aim.Run(
+        repo=args["train"]["data_dir"],
+        experiment=args["track_project"],
+        system_tracking_interval=None,
+        log_system_params=False,
     )
-    return wandb, exp_id
+    run.name = exp_id
+    run["hparams"] = args
+    if args["tag"] is not None:
+        run.add_tag(args["tag"])
+    return run, exp_id
 
 
-def train(args, vec_env, policy, wandb=None, exp_id=None, skip_resample=False, final_eval=False):
-    if wandb is None and args["track"]:
-        wandb, exp_id = init_wandb(args, args["env_name"])
+def train(args, vec_env, policy, run=None, exp_id=None, skip_resample=False, final_eval=False):
+    if run is None and args["track"]:
+        run, exp_id = init_run(args)
 
     if exp_id is None:
         exp_id = args["env_name"] + "-" + str(uuid.uuid4())[:8]
 
     train_config = pufferlib.namespace(**args["train"], env=args["env_name"], exp_id=exp_id)
-    data = clean_pufferl.create(train_config, vec_env, policy, wandb=wandb)
+    data = clean_pufferl.create(train_config, vec_env, policy, run=run)
 
     data_dir = os.path.join(train_config.data_dir, exp_id)
     os.makedirs(data_dir, exist_ok=True)
@@ -259,10 +260,10 @@ def train(args, vec_env, policy, wandb=None, exp_id=None, skip_resample=False, f
                 eval_stats = EvalStats(vec_env, failed_save_path=os.path.join(data_dir, f"failed_{data.epoch:06d}.pkl"))
                 rollout(vec_env, policy, eval_stats)
                 eval_results = eval_stats.update_env_and_close()
-                if data.wandb:
+                if data.run:
                     eval_results["0verview/agent_steps"] = data.global_step
                     eval_results["0verview/epoch"] = data.epoch
-                    wandb.log(eval_results)
+                    clean_pufferl.log_dict(run, eval_results, data.global_step)
 
             # Resample motions every 200 epochs (train_config.motion_resample_interval)
             vec_env.env.resample_motions()
@@ -303,10 +304,10 @@ def train(args, vec_env, policy, wandb=None, exp_id=None, skip_resample=False, f
         eval_stats = EvalStats(vec_env)
         rollout(vec_env, policy, eval_stats)
         results.update(eval_stats.update_env_and_close())
-        if data.wandb:
+        if data.run:
             results["0verview/agent_steps"] = data.global_step
             results["0verview/epoch"] = data.epoch
-            wandb.log(results)
+            clean_pufferl.log_dict(run, results, data.global_step)
 
     # NOTE: Not using standard eval
     # steps_evaluated = 0
@@ -390,7 +391,7 @@ def sweep_carbs(args, sweep_count=500, max_suggestion_cost=3600):
         group,
         name,
         space,
-        wandb_params,
+        sweep_params,
         mmin=None,
         mmax=None,
         search_center=None,
@@ -398,16 +399,16 @@ def sweep_carbs(args, sweep_count=500, max_suggestion_cost=3600):
         rounding_factor=1,
         scale=1,
     ):
-        wandb_param = wandb_params[group]["parameters"][name]
-        if "values" in wandb_param:
-            values = wandb_param["values"]
+        sweep_param = sweep_params[group]["parameters"][name]
+        if "values" in sweep_param:
+            values = sweep_param["values"]
             mmin = min(values)
             mmax = max(values)
 
         if mmin is None:
-            mmin = float(wandb_param["min"])
+            mmin = float(sweep_param["min"])
         if mmax is None:
-            mmax = float(wandb_param["max"])
+            mmax = float(sweep_param["max"])
 
         if space == "log":
             Space = LogSpace
@@ -440,16 +441,10 @@ def sweep_carbs(args, sweep_count=500, max_suggestion_cost=3600):
     if not os.path.exists("checkpoints"):
         os.system("mkdir checkpoints")
 
-    import wandb
-
-    sweep_id = wandb.sweep(
-        sweep=args["sweep"],
-        project="carbs",
-    )
     target_metric = args["sweep"]["metric"]["name"].split("/")[-1]
     sweep_parameters = args["sweep"]["parameters"]
 
-    # Must be hardcoded and match wandb sweep space for now
+    # Must be hardcoded and match the sweep space in config.ini for now
     param_spaces = []
     if "total_timesteps" in sweep_parameters["train"]["parameters"]:
         time_param = sweep_parameters["train"]["parameters"]["total_timesteps"]
@@ -505,9 +500,6 @@ def sweep_carbs(args, sweep_count=500, max_suggestion_cost=3600):
         np.random.seed(int(time.time()))
         torch.manual_seed(int(time.time()))
 
-        wandb, exp_id = init_wandb(args, args["env_name"])
-        wandb.config.__dict__["_locked"] = {}
-
         orig_suggestion = carbs.suggest().suggestion
         suggestion = orig_suggestion.copy()
         print("Suggestion:", suggestion)
@@ -523,12 +515,11 @@ def sweep_carbs(args, sweep_count=500, max_suggestion_cost=3600):
 
         args["env"].update(env_suggestion)
         args["track"] = True
-        wandb.config.update({"train": args["train"]}, allow_val_change=True)
-        wandb.config.update({"env": args["env"]}, allow_val_change=True)
+        run, exp_id = init_run(args)
 
-        print(wandb.config.train)
-        print(wandb.config.env)
-        print(wandb.config.policy)
+        print(args["train"])
+        print(args["env"])
+        print(args["policy"])
 
         try:
             vec_env = pufferlib.vector.make(env_creator, env_kwargs=args["env"])
@@ -539,7 +530,7 @@ def sweep_carbs(args, sweep_count=500, max_suggestion_cost=3600):
             policy = make_policy(vec_env.driver_env, policy_cls, rnn_cls, args)
 
             stats, uptime = train(
-                args, vec_env, policy, wandb, exp_id, skip_resample=args["skip_resample"], final_eval=args["final_eval"]
+                args, vec_env, policy, run, exp_id, skip_resample=args["skip_resample"], final_eval=args["final_eval"]
             )
 
         except Exception:
@@ -565,7 +556,8 @@ def sweep_carbs(args, sweep_count=500, max_suggestion_cost=3600):
                 )
             )
 
-    wandb.agent(sweep_id, main, count=sweep_count)
+    for _ in range(sweep_count):
+        main()
 
 
 if __name__ == "__main__":
@@ -577,13 +569,17 @@ if __name__ == "__main__":
     )
     parser.add_argument("-c", "--checkpoint-path", type=str, default=None, help="Path to a pretrained checkpoint")
     # default="ckpt_amass_800m_acc97.pt")
-    parser.add_argument("--track", action="store_true", help="Track on WandB")
-    parser.add_argument("--wandb-project", type=str, default="pufferlib")
+    parser.add_argument("--track", action="store_true", help="Track with Aim")
+    parser.add_argument("--track-project", type=str, default="pufferlib")
+    parser.add_argument("--tag", type=str, default=None, help="Aim tag; required for --mode sweep")
     parser.add_argument("--ssc-lr", type=float, default=0.0001, help="Sweep search center for learning rate")
     parser.add_argument("--skip-resample", action="store_true", help="Skip resampling motions")
     parser.add_argument("--final-eval", action="store_true", help="Final evaluation")
 
     args = parser.parse_known_args()[0]
+
+    if args.mode == "sweep" and not args.tag:
+        parser.error("--tag is required for --mode sweep")
 
     p = configparser.ConfigParser()
     p.read(args.config)
@@ -610,6 +606,9 @@ if __name__ == "__main__":
                 next[subkey] = {}
             prev = next
             next = next[subkey]
+        if key == "tag":
+            prev[subkey] = value
+            continue
         try:
             prev[subkey] = ast.literal_eval(value)
         except:  # noqa
