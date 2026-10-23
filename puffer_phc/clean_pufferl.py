@@ -9,6 +9,7 @@ import pyximport
 from threading import Thread
 from collections import defaultdict, deque
 
+import aim
 import rich
 from rich.console import Console
 from rich.table import Table
@@ -28,7 +29,7 @@ from c_gae import compute_gae  # noqa
 torch.set_float32_matmul_precision("high")
 
 
-def create(config, vecenv, policy, optimizer=None, wandb=None):
+def create(config, vecenv, policy, optimizer=None, run=None):
     seed_everything(config.seed, config.torch_deterministic)
     profile = Profile()
     losses = make_losses()
@@ -84,7 +85,7 @@ def create(config, vecenv, policy, optimizer=None, wandb=None):
         experience=experience,
         profile=profile,
         losses=losses,
-        wandb=wandb,
+        run=run,
         global_step=0,
         epoch=0,
         stats=defaultdict(list),
@@ -161,8 +162,8 @@ def evaluate(data):
 
     with profile.eval_misc:
         for k, v in infos.items():
-            if "_map" in k and data.wandb is not None:
-                data.stats[f"Media/{k}"] = data.wandb.Image(v[0])
+            if "_map" in k and data.run is not None:
+                data.stats[f"Media/{k}"] = aim.Image(v[0])
                 continue
 
             if isinstance(v, np.ndarray):
@@ -403,6 +404,11 @@ def train(data):
             data.msg = f"Checkpoint saved at update {data.epoch}"
 
 
+def log_dict(run, d, step):
+    for k, v in d.items():
+        run.track(v, name=k, step=step)
+
+
 def mean_and_log(data):
     for k in list(data.stats.keys()):
         v = data.stats[k]
@@ -413,11 +419,12 @@ def mean_and_log(data):
 
         data.stats[k] = v
 
-    if data.wandb is None:
+    if data.run is None:
         return
 
     data.last_log_time = time.time()
-    data.wandb.log(
+    log_dict(
+        data.run,
         {
             "0verview/SPS": data.profile.SPS,
             "0verview/agent_steps": data.global_step,
@@ -426,22 +433,17 @@ def mean_and_log(data):
             **{f"environment/{k}": v for k, v in data.stats.items()},
             **{f"losses/{k}": v for k, v in data.losses.items()},
             **{f"performance/{k}": v for k, v in data.profile},
-        }
+        },
+        data.global_step,
     )
 
 
 def close(data):
     data.vecenv.close()
     data.utilization.stop()
-    config = data.config
-    if data.wandb is not None:
-        artifact_name = f"{config.exp_id}_model"
-        artifact = data.wandb.Artifact(artifact_name, type="model")
-        model_path = save_checkpoint(data)
-        artifact.add_file(model_path)
-        # NOTE: PHC model is large to save for all sweep runs
-        # data.wandb.run.log_artifact(artifact)
-        data.wandb.finish()
+    save_checkpoint(data)
+    if data.run is not None:
+        data.run.close()
 
 
 class Profile:
