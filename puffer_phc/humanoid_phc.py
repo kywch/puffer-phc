@@ -880,7 +880,7 @@ class HumanoidPHC:
             # TODO: find a way to evaluate full motion, probably not during training
             max_length=self.max_episode_length,
             im_eval=self.flag_im_eval,
-            num_thread=4,
+            num_thread=1,
             smpl_type=self.humanoid_type,
             step_dt=self.dt,
             is_deterministic=self.flag_debug,
