@@ -86,7 +86,7 @@ pufferlib = { git = "https://github.com/kywch/PufferLib.git", branch = "isaacgym
 pytest = ">=7.4,<9"
 
 [tool.pixi.feature.newton.tasks]
-test = "pytest tests -q"
+test = "pytest tests -q --ignore=tests/test_isaacgym_backend.py"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

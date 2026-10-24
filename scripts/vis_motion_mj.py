@@ -1,11 +1,6 @@
 import time
 import argparse
 
-try:
-    import isaacgym  # noqa: F401  # must be imported before torch
-except ImportError:
-    pass
-
 import torch
 import numpy as np
 

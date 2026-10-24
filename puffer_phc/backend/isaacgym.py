@@ -1,13 +1,14 @@
 import sys
 
-import numpy as np
-import torch
 from isaacgym import gymapi
 
 try:
     import gymtorch
 except ImportError:
     from isaacgym import gymtorch
+
+import numpy as np
+import torch
 
 from puffer_phc.backend.base import SimBackend
 from puffer_phc.torch_utils import torch_rand_float

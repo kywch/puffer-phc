@@ -2,11 +2,6 @@ import time
 import argparse
 import functools
 
-try:
-    import isaacgym  # noqa: F401  # must be imported before torch
-except ImportError:
-    pass
-
 from puffer_phc.humanoid_phc import HumanoidPHC
 
 import torch
@@ -20,6 +15,7 @@ def env_creator(name="puffer_phc"):
 
 
 def make(name, **kwargs):
+    """Backend "isaacgym" needs puffer_phc.backend.preload_isaacgym() called before torch is imported."""
     return PHCPufferEnv(name, **kwargs)
 
 

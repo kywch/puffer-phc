@@ -1,3 +1,4 @@
+# ruff: noqa: E402  # isaacgym's backend-peek must run before any heavier (torch-importing) import below
 import os
 import gc
 import ast
@@ -14,10 +15,24 @@ import joblib
 from tqdm import tqdm
 from rich_argparse import RichHelpFormatter
 
-try:
-    import isaacgym  # noqa: F401  # must be imported before torch
-except ImportError:
-    pass
+from puffer_phc.backend import preload_isaacgym
+
+
+def _peek_backend(argv):
+    """Peek at [env] backend (config.ini / --config / --env.backend) before any heavier import runs:
+    isaacgym must be imported before torch (see puffer_phc.backend.preload_isaacgym)."""
+    peek = argparse.ArgumentParser(add_help=False)
+    peek.add_argument("--config", default="config.ini")
+    peek.add_argument("--env.backend", dest="backend", default=None)
+    known = peek.parse_known_args(argv)[0]
+    if known.backend is not None:
+        return known.backend
+    p = configparser.ConfigParser()
+    p.read(known.config)
+    return p.get("env", "backend", fallback="isaacgym").strip("\"'")
+
+
+preload_isaacgym(_peek_backend(sys.argv[1:]))
 
 import torch
 import numpy as np
