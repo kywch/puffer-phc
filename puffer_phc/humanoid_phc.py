@@ -40,9 +40,11 @@ class HumanoidPHC:
         device_id=0,  # Allow multi-gpu setting
         headless=True,
     ):
-        self.backend = make_backend(
-            cfg["env"].get("backend", "isaacgym"), device_type=device_type, device_id=device_id, headless=headless
-        )
+        backend_name = cfg["env"].get("backend", "isaacgym")
+        backend_kwargs = dict(device_type=device_type, device_id=device_id, headless=headless)
+        if backend_name == "mujoco_cpu" and "solver_preset" in cfg["env"]:
+            backend_kwargs["solver_preset"] = cfg["env"]["solver_preset"]
+        self.backend = make_backend(backend_name, **backend_kwargs)
         self.device = self.backend.device
         self.dt = self.backend.dt
 

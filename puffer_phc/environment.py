@@ -39,6 +39,7 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         kp_scale=1.0,
         kd_scale=1.0,
         backend="isaacgym",
+        solver_preset="isaacgym_parity_240",
     ):
         self.render_mode = "native"
         cfg = {
@@ -52,6 +53,7 @@ class PHCPufferEnv(pufferlib.PufferEnv):
                 "kp_scale": kp_scale,
                 "kd_scale": kd_scale,
                 "backend": backend,
+                "solver_preset": solver_preset,
             },
             "robot": {
                 "has_self_collision": has_self_collision,

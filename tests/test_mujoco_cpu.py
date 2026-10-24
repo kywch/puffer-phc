@@ -85,9 +85,12 @@ def test_pd_target_mapping(env):
     assert torch.allclose(actual.cpu(), expected, atol=1e-6)
 
 
-def test_dof_force_sign(env):
-    # Static case: zero velocity, one physics substep, so the PD spring term (not damping) dominates.
+def test_dof_force_sign(env, monkeypatch):
+    # Static case: zero velocity, one physics substep, so the kp spring term dominates. refresh() reads the last
+    # substep's qfrc_actuator; after all substeps, light distal joints (hands, neck) have nearly closed the error
+    # and -kd*qd dominates instead.
     e, b = env.env, env.env.backend
+    monkeypatch.setitem(b.preset, "substeps", 1)
     e.reset()
     ids = torch.arange(b.num_envs)
     b.dof_vel[:], b.root_states[:, 7:] = 0, 0
@@ -111,15 +114,35 @@ def test_dof_force_sign(env):
 
 def test_pd_gains_match_xml(env):
     # Independent of create_envs: re-parses the raw XML for stiffness/damping (not Newton's ModelBuilder,
-    # whose gains are the code under test), to check the ankle/toe 0.2x scaling and the kd += kp/120 term.
+    # whose gains are the code under test), to check the active preset's per-body gain scaling and the
+    # kd += kp/120 term.
     b = env.env.backend
     mjm = mujoco.MjModel.from_xml_string(b._xml)
     kp = torch.tensor(mjm.jnt_stiffness[1:], dtype=torch.float32)  # one entry per raw hinge dof, root excluded
     kd = torch.tensor(mjm.dof_damping[6:], dtype=torch.float32)
-    ankle = torch.tensor([b.body_names[1 + d // 3] in ("L_Ankle", "R_Ankle", "L_Toe", "R_Toe") for d in range(b.num_dof)])
-    s = torch.where(ankle, 0.2, 1.0)
+    gains = b.preset["gains"]
+    s = torch.tensor([gains.get(b.body_names[1 + d // 3], 1.0) for d in range(b.num_dof)])
     assert torch.allclose(wp.to_torch(b.model.joint_target_ke)[6:], s * kp, atol=1e-4)
     assert torch.allclose(wp.to_torch(b.model.joint_target_kd)[6:], s * (kd + kp / 120.0), atol=1e-4)
+
+
+@pytest.mark.parametrize("preset", ["isaacgym_parity_240", "isaacgym_parity_480"])
+def test_solver_presets(preset):
+    # Each preset must build and step finitely, with refsafe set as the preset declares.
+    from puffer_phc.backend.mujoco_cpu import SOLVER_PRESETS
+    from puffer_phc.environment import make
+
+    e = make(
+        "puffer_phc", motion_file=DATA, has_self_collision=True, num_envs=2,
+        device_type="cpu", headless=True, backend="mujoco_cpu", solver_preset=preset,
+    )
+    e.reset()
+    b = e.env.backend
+    off = bool(b.solvers[0].mj_model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_REFSAFE)
+    assert off == (not SOLVER_PRESETS[preset]["refsafe"])
+    for _ in range(3):
+        b.step(torch.zeros(b.num_envs, b.num_dof))
+    assert torch.isfinite(b.dof_pos).all()
 
 
 def test_finite_obs_after_steps(env):

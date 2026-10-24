@@ -26,19 +26,28 @@ from puffer_phc.torch_utils import exp_map_to_quat, quat_conjugate, quat_rotate,
 
 # Gym's per-shape self-collision filter bits (humanoid_phc / isaacgym backend): shapes collide iff (f_i & f_j) == 0
 FILTER_INTS = [0, 0, 7, 16, 12, 0, 56, 2, 33, 128, 0, 192, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  # fmt: skip
-PHYSICS_DT = 1 / 120  # gym: dt 1/60 with PhysX's default substeps=2
-SUBSTEPS = 2  # physics steps per simulate()
+PHYSX_DT = 1 / 120  # gym's physics step: PhysX's implicit drive adds kp*PHYSX_DT damping
 MJ_SOLIMP = (0.9, 0.95, 0.001, 0.5, 2.0)  # MuJoCo default
-ANKLE_TOE = ("L_Ankle", "R_Ankle", "L_Toe", "R_Toe")
+# gym TGS (4 position iterations) is unconverged: loaded joints act softer. kp and kd scale per body
+GYM_TGS_GAIN_SCALE = {
+    "L_Ankle": 0.2, "R_Ankle": 0.2, "L_Toe": 0.2, "R_Toe": 0.2,
+    "L_Hip": 0.8, "R_Hip": 0.8, "L_Knee": 0.8, "R_Knee": 0.8,
+    "Torso": 0.5, "Spine": 0.5, "Chest": 0.5,
+}  # fmt: skip
+# name: physics dt, steps per simulate(), contact solref, refsafe on/off, gym-TGS gain scales. Both are eval-parity
+# settings for gym-trained checkpoints, not training presets; see docs/physics_solver.md.
+SOLVER_PRESETS = {
+    # Default: half the physics cost of isaacgym_parity_480, refsafe off. 0.984 success / 39.5 mm MPJPE.
+    "isaacgym_parity_240": dict(dt=1 / 240, substeps=4, solref=(0.005, 1.0), refsafe=False, gains=GYM_TGS_GAIN_SCALE),
+    # Higher-fidelity reference, refsafe on. 0.977/0.961 success, 38.7/39.1 mm MPJPE (seeds 0/1).
+    "isaacgym_parity_480": dict(dt=1 / 480, substeps=8, solref=(0.005, 1.0), refsafe=True, gains=GYM_TGS_GAIN_SCALE),
+}
 
 
 class MujocoCPUBackend(SimBackend):
-    def __init__(self, device_type, device_id, headless, gym_tgs_ankles=True):
-        # gym_tgs_ankles: scale ankle/toe kp and kd by 0.2 to emulate gym training's unconverged PhysX TGS
-        # (4 position iterations makes the loaded ankles ~2x softer). An empirical fit on standing tests (t_fall
-        # 1.15 s in both), not a derivation; see tmp/newton/dynamics_report.md. Off = converged PhysX.
+    def __init__(self, device_type, device_id, headless, solver_preset="isaacgym_parity_240"):
         super().__init__(device_type, device_id)
-        self.gym_tgs_ankles = gym_tgs_ankles
+        self.preset = SOLVER_PRESETS[solver_preset]
 
     def load_asset(self, asset_file):
         root = ET.parse(asset_file).getroot()
@@ -75,11 +84,12 @@ class MujocoCPUBackend(SimBackend):
 
         # The importer reads XML stiffness/damping as a MuJoCo passive spring/damper; gym uses them as PD gains.
         stiff = b.custom_attributes["mujoco:dof_passive_stiffness"]
+        gains = self.preset["gains"]
         for d in range(6, b.joint_dof_count):
             kp, kd = kp_scale * float(stiff.values[d]), kd_scale * b.joint_damping[d]
-            s = 0.2 if self.gym_tgs_ankles and self.body_names[1 + (d - 6) // 3] in ANKLE_TOE else 1.0
+            s = gains.get(self.body_names[1 + (d - 6) // 3], 1.0)
             b.joint_target_ke[d] = s * kp
-            b.joint_target_kd[d] = s * (kd + kp * PHYSICS_DT)  # PhysX's implicit kp = explicit kp + damping kp*dt
+            b.joint_target_kd[d] = s * (kd + kp * PHYSX_DT)  # PhysX's implicit kp = explicit kp + damping kp*dt
             b.joint_target_mode[d] = int(newton.JointTargetMode.POSITION)
             b.joint_damping[d] = 0.0
             b.joint_armature[d] = 0.02
@@ -88,7 +98,7 @@ class MujocoCPUBackend(SimBackend):
         # Contact params on the humanoid geoms; solmix 1e6 makes them win over the ground plane's defaults.
         for s in range(b.shape_count):
             b.custom_attributes["mujoco:condim"].values[s] = 3  # XML default condim=1 is frictionless
-            b.custom_attributes["mujoco:solref"].values[s] = (1 / 60, 1.0)
+            b.custom_attributes["mujoco:solref"].values[s] = self.preset["solref"]
             b.custom_attributes["mujoco:geom_solimp"].values[s] = MJ_SOLIMP
             b.custom_attributes["mujoco:geom_solmix"].values[s] = 1e6
             b.shape_material_mu[s] = 1.0
@@ -99,17 +109,10 @@ class MujocoCPUBackend(SimBackend):
         self.model = world.finalize(device="cpu")
         self.body_masses = [self.model.body_mass.numpy().tolist()] * num_envs
 
-        # Sim preset "fast": same 1/120 s physics step as the gym setup (dt 1/60 with PhysX's default substeps=2),
-        # 4 solver steps per 1/30 s control step, ~80k sim SPS at 1024 envs on an RTX 3090 with mujoco-warp.
-        # solref timeconst is set to 2*dt (1/60) on purpose: MuJoCo clamps anything smaller at this dt ("refsafe"),
-        # and setting it on the humanoid geoms keeps the ground plane's defaults from being mixed in.
-        # Contacts are softer than PhysX: ~24 mm fall-impact penetration vs 7 mm, ~5 mm vs 0.3 mm standing,
-        # more foot slip (38 vs 8.5 mm); friction (slide distance) matches. Stiffer alternatives measured in
-        # the derisk work (tmp/newton/presets.py, FINDINGS.md "Solver presets"):
-        #   dexrl: discrete integrator, 16 x 1/480 s, solref 0.005, solimp dmax 0.9999 -> lowest penetration
-        #          (stand 0.4 mm, impact 14 mm, slip 21 mm), ~19.5k SPS
-        # A contact margin does not help: MuJoCo applies force on (dist - margin), so it only raises the floor.
-        # Switch only if eval shows the contact gap matters.
+        # solver_preset picks physics dt/substeps, contact solref, refsafe on/off and PD gain scales
+        # (SOLVER_PRESETS above): eval-parity settings for gym-trained checkpoints, not training presets.
+        # refsafe clamps contact timeconst >= 2*dt; a 1/120-scale config (tc >= 1/60) makes loaded feet slip
+        # 3-6x more than PhysX, hence the finer dt. See docs/physics_solver.md.
         with wp.ScopedDevice("cpu"):
             self.solvers = [
                 newton.solvers.SolverMuJoCo(
@@ -117,6 +120,9 @@ class MujocoCPUBackend(SimBackend):
                 )
                 for _ in range(num_envs)
             ]
+        if not self.preset["refsafe"]:
+            for solver in self.solvers:
+                solver.mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_REFSAFE
         self.states = [self.model.state() for _ in range(num_envs)]
         self.controls = [self.model.control() for _ in range(num_envs)]
         self._q = [wp.to_torch(s.joint_q) for s in self.states]  # [7 + 23*4]: root pos, quat xyzw, joint quats
@@ -162,9 +168,10 @@ class MujocoCPUBackend(SimBackend):
         self.dof_force[:] = torch.tensor(np.stack([s.mj_data.qfrc_actuator[6:] for s in self.solvers]))
 
     def simulate(self):
+        dt, substeps = self.preset["dt"], self.preset["substeps"]
         for solver, state, control in zip(self.solvers, self.states, self.controls):
-            for _ in range(SUBSTEPS):
-                solver.step(state, state, control, None, PHYSICS_DT)
+            for _ in range(substeps):
+                solver.step(state, state, control, None, dt)
                 niter, ncon = solver.mj_data.solver_niter[0], solver.mj_data.ncon
                 self._stats_sum += (1, niter, ncon)
                 self._stats_max = np.maximum(self._stats_max, (niter, ncon))

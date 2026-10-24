@@ -63,7 +63,8 @@ pixi run python scripts/train.py -m data/amass_train_take6_upright.pkl \
 # Eval (headless; writes eval_summary_MMDD_HHMM.json and results_by_motion_MMDD_HHMM.tsv next to the checkpoint)
 pixi run python scripts/train.py --mode eval -c ckpt_amass_800m_acc97.pt -m data/amass_train_take6_upright.pkl
 
-# Eval on MuJoCo CPU (Newton SolverMuJoCo, one CPU solver per env; ~2 min for 129 motions)
+# Eval on MuJoCo CPU (Newton SolverMuJoCo, one CPU solver per env; ~3.5 min for 129 motions with the default
+# isaacgym_parity_240 preset, ~6 min with isaacgym_parity_480)
 pixi run -e newton python scripts/train.py --mode eval -c ckpt_amass_800m_acc97.pt -m data/amass_train_take6_upright.pkl --env.backend mujoco_cpu --env.num-envs 129
 
 # Tests (both envs define `test`, so -e is required)
@@ -82,8 +83,8 @@ The training dashboard is a rich live table. When stdout is redirected, the log 
 - `[env] backend` in `config.ini` selects `isaacgym` (default) or `mujoco_cpu`.
 - Code in `puffer_phc/backend/` (`base.py` docstring is the interface contract: tensor layouts and conventions).
 - `mujoco_cpu` converts gym's per-joint rotation-vector dof_pos, maps PD targets through the measured PhysX drive frame (`puffer_phc/assets/smpl_humanoid_drive_frame.txt`).
-- By default scales ankle/toe gains 0.2x to emulate Isaac Gym's unconverged TGS solver (empirical fit).
-- Zero-shot eval of `ckpt_amass_800m_acc97.pt` on mujoco_cpu: success 0.512, MPJPE 57.4 mm (physics gap, not a bug).
+- `mujoco_cpu` eval-parity physics is a `[env] solver_preset` (`--env.solver-preset`): `isaacgym_parity_240` (default, 8 x 1/240 s per control step, refsafe off) or `isaacgym_parity_480` (16 x 1/480 s, refsafe on, higher fidelity, ~2x the cost). Both use near-rigid contacts (solref 0.005) and per-body kp/kd gain scales (ankle/toe 0.2, hip/knee 0.8, torso/spine/chest 0.5) to emulate Isaac Gym's unconverged TGS solver. See `docs/physics_solver.md` for the settings and why.
+- Eval of `ckpt_amass_800m_acc97.pt` on mujoco_cpu (default `isaacgym_parity_240` preset): success 0.984, MPJPE 39.5 mm (vs gym's 0.992 / 37.4; remaining gap is physics, not a bug; eval has ±0.02 success run-to-run noise, see docs/physics_solver.md).
 - Inspect solver state via `backend.solvers[i].mj_model` / `.mj_data`.
 
 ## Reference results
