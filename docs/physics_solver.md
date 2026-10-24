@@ -1,11 +1,11 @@
 # Physics solver settings: Isaac Gym (training) vs MuJoCo-CPU (eval)
 
-Training runs on Isaac Gym/PhysX (`puffer_phc/backend/isaacgym.py`). Eval of a gym-trained checkpoint can also run on
-the MuJoCo-CPU backend (`puffer_phc/backend/mujoco_cpu.py`, Newton's `SolverMuJoCo(use_mujoco_cpu=True)`) or its GPU
-twin `mujoco_gpu` (`mujoco_gpu.py`, mujoco-warp; same model and presets, agrees with CPU to ~1 um over 2 control steps).
-PhysX and MuJoCo disagree enough on contact and joint dynamics that naively porting gym's numbers halved the eval
-success rate. This doc records what gym actually does, what MuJoCo-CPU is configured to do to match it for eval, why,
-and the evidence.
+The provided checkpoint was trained on Isaac Gym/PhysX (`puffer_phc/backend/isaacgym.py`). Eval of a gym-trained
+checkpoint can also run on the MuJoCo-CPU backend (`puffer_phc/backend/mujoco_cpu.py`, Newton's
+`SolverMuJoCo(use_mujoco_cpu=True)`) or its GPU twin `mujoco_gpu` (`mujoco_gpu.py`, mujoco-warp; same model and
+presets, agrees with CPU to ~1 um over 2 control steps). PhysX and MuJoCo disagree enough on contact and joint
+dynamics that naively porting gym's numbers halved the eval success rate. This doc records what gym actually does,
+what MuJoCo-CPU is configured to do to match it for eval, why, and the evidence.
 
 ## Isaac Gym / PhysX, as configured
 
@@ -26,8 +26,9 @@ From `puffer_phc/backend/base.py` and `isaacgym.py`:
 
 `puffer_phc/backend/_newton_mujoco.py` (used by both MuJoCo backends). Physics dt/substeps, contact solref and refsafe
 on/off are selected via `SOLVER_PRESETS`, chosen with `[env] solver_preset` in config.ini or `--env.solver-preset`:
-`isaacgym_parity_240` (default, 8 x 1/240 s per control step, refsafe off) or `isaacgym_parity_480` (16 x 1/480 s,
-refsafe on, higher fidelity, about 2x the cost). Everything else below is a fixed constant.
+`isaacgym_parity_240` (8 x 1/240 s per control step, refsafe off; use it to eval the provided gym checkpoint) or
+`isaacgym_parity_480` (16 x 1/480 s, refsafe on, higher fidelity, about 2x the cost). Everything else below is a fixed
+constant.
 
 | setting | value | why |
 |---|---|---|
@@ -68,15 +69,16 @@ refsafe on, higher fidelity, about 2x the cost). Everything else below is a fixe
 | 8x1/240, refsafe off, tc 0.005, no gain scales (seeds 0/1) | 0.930 / 0.961 | 43.8 / 43.0 |
 | 16x1/480, tc 0.005, no gain scales ("B") | 0.95 (0.946-0.961) | 41.0-41.3 |
 | **isaacgym_parity_480 preset (16x1/480, tc 0.005, hip/knee 0.8 + torso/spine/chest 0.5, seeds 0/1)** | **0.977 / 0.961** | **38.7 / 39.1** |
-| **isaacgym_parity_240 preset (default: 8x1/240, refsafe off, tc 0.005, same gains)** | **0.984** (rerun 0.992) | **39.5** (rerun 38.0) |
+| **isaacgym_parity_240 preset (8x1/240, refsafe off, tc 0.005, same gains)** | **0.984** (rerun 0.992) | **39.5** (rerun 38.0) |
 | isaacgym_parity_240 on mujoco_gpu (6 runs) / isaacgym_parity_480 on mujoco_gpu (2 runs) | 0.953-0.977 / 0.969, 0.977 | 38.9-40.4 / 39.0, 38.9 |
 | seed noise (same config, different seeds) | about ±0.015 | about ±0.3 |
 
 Full sweep (contact knobs, gain variants, open-loop replay diagnostics) is in `tmp/mujoco/REPORT.md` (gitignored,
 not linked further here since it is local-only).
 
-`isaacgym_parity_240` is the default `solver_preset` (`puffer_phc/backend/_newton_mujoco.py`): about half the cost of
-`isaacgym_parity_480` (~3.5 min vs ~6 min wall time for this 129-motion eval) for a success/MPJPE within noise of it.
+`isaacgym_parity_240` is the preset for gym-checkpoint eval (config.ini's `newton_120` is for training): about half
+the cost of `isaacgym_parity_480` (~3.5 min vs ~6 min wall time for this 129-motion eval) for a success/MPJPE within
+noise of it.
 
 ## Training candidates for GPU Newton (untested on GPU)
 

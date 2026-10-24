@@ -37,7 +37,7 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         termination_distance=0.25,
         kp_scale=1.0,
         kd_scale=1.0,
-        backend="isaacgym",
+        backend="mujoco_gpu",
         solver_preset="isaacgym_parity_240",
     ):
         self.render_mode = "native"

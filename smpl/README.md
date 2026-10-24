@@ -6,3 +6,11 @@ Download SMPL paramters from [SMPL](https://smpl.is.tue.mpg.de/), and unzip them
     |-- SMPL_NEUTRAL.pkl
     |-- SMPL_MALE.pkl
 ```
+
+The default (Python 3.12) environment can't load chumpy. Convert the files' chumpy arrays to numpy once, from the repo root (chumpy needs Python <= 3.10):
+
+```
+uv run smpl/strip_chumpy.py
+```
+
+`pixi run -e isaacgym python smpl/strip_chumpy.py` also works. The converted files work in both environments.

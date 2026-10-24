@@ -40,7 +40,7 @@ class HumanoidPHC:
         device_id=0,  # Allow multi-gpu setting
         headless=True,
     ):
-        backend_name = cfg["env"].get("backend", "isaacgym")
+        backend_name = cfg["env"].get("backend", "mujoco_gpu")
         backend_kwargs = dict(device_type=device_type, device_id=device_id, headless=headless)
         if backend_name in ("mujoco_cpu", "mujoco_gpu") and "solver_preset" in cfg["env"]:
             backend_kwargs["solver_preset"] = cfg["env"]["solver_preset"]
@@ -345,7 +345,7 @@ class HumanoidPHC:
 
         ### Reward-related
         self.use_power_reward = True
-        self.power_coefficient = 0.0005  # env_config.get("rew_power_coef", 0.0005)
+        self.power_coefficient = env_config["rew_power_coef"]
 
         # NOTE: body pos reward, body rot reward, body vel reward, body ang vel reward
         self._imitation_reward_dim = 4

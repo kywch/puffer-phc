@@ -1,5 +1,8 @@
 from abc import ABC, abstractmethod
 
+# Gym's per-shape self-collision filter bits (capsule model): two shapes collide iff (f_i & f_j) == 0
+FILTER_INTS = [0, 0, 7, 16, 12, 0, 56, 2, 33, 128, 0, 192, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  # fmt: skip
+
 
 class SimBackend(ABC):
     """Simulator seam used by HumanoidPHC. Gym conventions throughout: N envs, 24 bodies, 69 DOFs (23 joints x 3).

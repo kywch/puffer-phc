@@ -1,71 +1,40 @@
-[build-system]
-requires = ["Cython>=3.0", "pip>=23.0", "setuptools>=61.0", "wheel", "numpy==1.23.3"]
-
 [project]
-description = "Simplified Perceptual Humanoid Control with Pufferlib"
 name = "puffer-phc"
+version = "0.1.1"
+description = "Simplified Perpetual Humanoid Control with Pufferlib"
 authors = [
     { name = "Kyoung Whan Choe", email = "choe.kyoung@gmail.com" },
 ]
-requires-python = ">=3.8,<3.9"
-version = "0.1.1"
-dependencies = [
-    "smpl_sim@git+https://github.com/kywch/SMPLSim.git",
-    "chumpy@git+https://github.com/nico-von-huene/chumpy.git",
-    "carbs@git+https://github.com/PufferAI/carbs.git",    
-]
+# default env: 3.12, isaacgym env: 3.8 (pinned per feature below)
+requires-python = ">=3.8,<3.13"
 
 [tool.pixi.workspace]
 channels = ["pytorch", "nvidia", "conda-forge"]
 platforms = [{ name = "linux-64-cuda", platform = "linux-64", cuda = "12.1" }]
 
-[tool.pixi.dependencies]
-python = ">=3.8,<3.9"
-pip = ">=24.3.1,<25"
-# Match with ubuntu 22.04
-openssl = "==3.0.2"
-cython = ">=3.0.11,<4"
-setuptools = ">=75.3.0,<76"
-wheel = ">=0.45.1,<0.46"
-pre-commit = ">=3.5.0,<4"
-ruff = ">=0.6.2,<0.7"
-pytest = ">=7.4,<9"
-tyro = ">=0.8.14,<0.9"
-polars = ">=1.5.0,<2"
-joblib = ">=1.4.2,<2"
+# default: Newton / MuJoCo (py3.12, no Isaac Gym), for `--env.backend mujoco_cpu` / `mujoco_gpu`.
+# isaacgym: the legacy py3.8 Isaac Gym stack: `pixi run -e isaacgym ...`.
+[tool.pixi.environments]
+default = ["newton"]
+isaacgym = ["isaacgym"]
 
-pytorch = "==2.3.1"
-pytorch-cuda = "==12.1"
-
-# isaacgym deps
-torchvision = ">=0.18.1,<0.19"
-scipy = ">=1.10.1,<2"
-imageio = ">=2.36.0,<3"
-fsspec = ">=2024.10.0,<2025"
-
+# The default feature is in both environments.
 [tool.pixi.pypi-dependencies]
 pufferlib = { git = "https://github.com/kywch/PufferLib.git", branch = "isaacgym" }
+smpl_sim = { git = "https://github.com/kywch/SMPLSim.git" }
+carbs = { git = "https://github.com/PufferAI/carbs.git" }
 aim = "==3.29.1"
+scipy = "*"
+joblib = "*"
+imageio = "*"
+polars = "*"
+pytest = ">=7.4,<9"
+ruff = ">=0.17.2,<0.18"
+pre-commit = "*"
 
 [tool.pixi.activation]
-scripts = ["env_setup.sh"]
 # the package is not installed; scripts import puffer_phc from the repo root
 env = { PYTHONPATH = "$PIXI_PROJECT_ROOT" }
-
-[tool.pixi.tasks]
-test_deps = "python -c 'import isaacgym, torch; print(torch.cuda.is_available())'"
-
-# build gymtorch here, so that vscode debugging can be used
-build_gymtorch = "cd gymtorch; python setup.py clean; python setup.py develop"
-
-test = "pytest tests -q"
-
-# default: Newton / MuJoCo (py3.12, no Isaac Gym), for `--env.backend mujoco_cpu` / `mujoco_gpu`.
-# no-default-feature: [project] pins py3.8 and chumpy (fails on py>=3.11; SMPL pkls were re-saved without it).
-# isaacgym: the py3.8 Isaac Gym stack from the default feature: `pixi run -e isaacgym ...`.
-[tool.pixi.environments]
-default = { features = ["newton"], no-default-feature = true }
-isaacgym = []
 
 [tool.pixi.feature.newton.dependencies]
 python = "3.12.*"
@@ -78,24 +47,39 @@ newton = { git = "https://github.com/newton-physics/newton", rev = "7edb1bb38023
 # open3d/trimesh deps that extra also pulls in.
 pyglet = ">=2.1.6,<3"
 imgui-bundle = ">=1.92.0"
-scipy = "*"
-joblib = "*"
-imageio = "*"
-tyro = "*"
-polars = "*"
-aim = "==3.29.1"
 # else the resolver takes dateutil 3 and backtracks aim's boto3 to 0.0.3, which pins six 1.7.3 (breaks pandas)
 python-dateutil = "<3"
-smpl_sim = { git = "https://github.com/kywch/SMPLSim.git" }
-carbs = { git = "https://github.com/PufferAI/carbs.git" }
-pufferlib = { git = "https://github.com/kywch/PufferLib.git", branch = "isaacgym" }
-pytest = ">=7.4,<9"
-
-[tool.pixi.feature.newton.activation]
-env = { PYTHONPATH = "$PIXI_PROJECT_ROOT" }
 
 [tool.pixi.feature.newton.tasks]
 test = "pytest tests -q --ignore=tests/test_isaacgym_backend.py"
+
+[tool.pixi.feature.isaacgym.dependencies]
+python = "3.8.*"
+pip = ">=24.3.1,<25"
+# Match with ubuntu 22.04
+openssl = "==3.0.2"
+cython = ">=3.0.11,<4"
+setuptools = ">=75.3.0,<76"
+wheel = ">=0.45.1,<0.46"
+pytorch = "==2.3.1"
+pytorch-cuda = "==12.1"
+torchvision = ">=0.18.1,<0.19"
+fsspec = ">=2024.10.0,<2025"
+
+[tool.pixi.feature.isaacgym.pypi-dependencies]
+# fails on py>=3.11; the default env loads SMPL pkls re-saved without it (smpl/strip_chumpy.py)
+chumpy = { git = "https://github.com/nico-von-huene/chumpy.git" }
+
+[tool.pixi.feature.isaacgym.activation.env]
+LD_LIBRARY_PATH = "$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# Necessary for capturing video (resolve vulkan:No DRI3 support): https://github.com/isaac-sim/IsaacGymEnvs/issues/126
+MESA_VK_DEVICE_SELECT = "10de:2204"
+
+[tool.pixi.feature.isaacgym.tasks]
+test_deps = "python -c 'import isaacgym, torch; print(torch.cuda.is_available())'"
+# build gymtorch here, so that vscode debugging can be used
+build_gymtorch = "cd third_party/gymtorch; python setup.py clean; python setup.py develop"
+test = "pytest tests -q"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

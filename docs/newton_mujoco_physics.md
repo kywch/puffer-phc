@@ -117,13 +117,13 @@ already exits early (2.5-3 mean iterations) and the 4096-env graph was not faste
 Both are in `SOLVER_PRESETS` (`backend/_newton_mujoco.py`), separate from the `isaacgym_parity_*` ones: select with
 `--env.solver-preset newton_180` or `newton_120`.
 
-- **newton_180 (M6o), primary.** It costs 1.3x less than 8 steps, and its contacts are close to T3: drop 36 vs 34
-  mm, tracking penetration 1.6 vs 1.1 mm, slip 58 vs 51 mm/s. It was stable in every scenario and agrees with CPU
-  as closely as GPU agrees with itself. M6 (refsafe on, tc 1/90) is the conservative fallback at the same cost, with
-  slightly softer contacts.
-- **newton_120 (T2b), fastest.** It has T1's cost and clearly better contacts than T1: drop 40 vs 66 mm, tracking
-  pen. 2.6 vs 5.3 mm, slip 83 vs 114 mm/s, ckpt 0.78-0.81 vs 0.64-0.65. Do not go stiffer at 1/120: T2 (tc 0.005) has
-  chaotic contacts.
+- **newton_180 (M6o), higher fidelity, slower.** It costs 1.3x less than 8 steps, and its contacts are close to T3:
+  drop 36 vs 34 mm, tracking penetration 1.6 vs 1.1 mm, slip 58 vs 51 mm/s. It was stable in every scenario and agrees
+  with CPU as closely as GPU agrees with itself. M6 (refsafe on, tc 1/90) is the conservative fallback at the same
+  cost, with slightly softer contacts.
+- **newton_120 (T2b), fastest; the training default in config.ini.** It has T1's cost and clearly better contacts than
+  T1: drop 40 vs 66 mm, tracking pen. 2.6 vs 5.3 mm, slip 83 vs 114 mm/s, ckpt 0.78-0.81 vs 0.64-0.65. Do not go
+  stiffer at 1/120: T2 (tc 0.005) has chaotic contacts.
 
 A short training run (e.g. 1-2 h, 4096 envs, each preset) must confirm:
 1. no NaN or contact/constraint overflow under random early-training actions;
