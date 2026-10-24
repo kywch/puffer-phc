@@ -16,7 +16,7 @@ import warp as wp
 from puffer_phc.backend import _newton_mujoco as nc
 from puffer_phc.backend.base import SimBackend
 
-NCONMAX, NJMAX = 200, 800  # per world; a humanoid lying flat has ~60-100 contacts, 4 rows each (pyramidal condim 3)
+NCONMAX, NJMAX = 200, 256  # per world; measured max 84 constraint rows (~21 pyramidal condim-3 contacts) at 4096 envs
 
 
 class MujocoGPUBackend(SimBackend):
@@ -40,9 +40,14 @@ class MujocoGPUBackend(SimBackend):
             self._xml, self.body_names, self.preset, n, self.device, kp_scale, kd_scale, has_self_collision
         )
         self.body_masses = self.model.body_mass.numpy().reshape(n, -1).tolist()
+        # ponytail: private mujoco-warp API (process-global const; BlockDim is experimental) — re-check after each
+        # mujoco-warp bump. Values tuned on RTX 3090 @4096 envs for our nv=75 kinematic tree.
+        mujoco_warp._src.types.M_BLOCK_DENSE_MAX = 80  # read in put_model(); default 64 < nv=75 trips sparse LDL
         self.solver = newton.solvers.SolverMuJoCo(
             self.model, solver="newton", integrator="implicitfast", cone="pyramidal", nconmax=NCONMAX, njmax=NJMAX
         )
+        bd = self.solver.mjw_model.block_dim
+        bd.cholesky_factorize = bd.cholesky_factorize_solve = 128  # default 32 is ~20% slower for this block size
         nc.apply_refsafe(self.preset, [self.solver.mj_model.opt, self.solver.mjw_model.opt])  # before graph capture
         self.state, self.control = s, c = self.model.state(), self.model.control()
         views = [wp.to_torch(a) for a in (s.joint_q, s.joint_qd, s.body_q, s.body_qd, c.joint_target_q)]
