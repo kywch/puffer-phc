@@ -16,7 +16,7 @@ SPS = env-steps/sec = num_envs x control-steps/sec, 4096 envs unless noted. "phy
 | newton_120 | physics | 105801 | 106926 | 141367 | - | 141367⁶ | 142760 |
 | newton_120 | env | 75653 | 76474 | 93710 | 106360 | 106360 | 129155 |
 | newton_120 | rollout (ckpt) | n/a¹ | 64963² | 76804³ | 86608 | 86608 | 97332 |
-| newton_120 | **training** | - | - | - | - | **36.6k→53.1–53.6k⁸** | **57900** |
+| newton_120 | **training** | - | - | - | - | **36.6k→53.1–53.6k⁸** | **~59.8k⁹** |
 | newton_180 | physics | 74933 | 75676 | 101333 | n/m⁴ | n/m⁴ | n/m⁴ |
 | newton_180 | env | 55775 | 56220 | 70677 | n/m⁴ | n/m⁴ | n/m⁴ |
 | isaacgym_parity_240 | physics | 55780 | 56291 | 75038 | n/m⁴ | n/m⁴ | n/m⁴ |
@@ -36,10 +36,12 @@ after 05a3d68 (training-loop only) and the env step work in §3.7. ⁵ measured 
 script, one other GPU process running (GPU not idle) — order-of-magnitude reference only, not comparable.
 ⁶ an independent re-measurement right after cb8ad4a saw 139754 on the same (6151f02) solver settings; cb8ad4a didn't
 touch the solver, so the ~1% gap to 141367 is run-to-run noise, not a regression. ⁷ `now` =
-05a3d68 plus the env step work in §3.7 (E1+E2+E3); training is the median SPS over epochs 3-12 of a
-`scripts/train.py` run at that state. ⁸ training SPS: 36.6k pre-05a3d68 (a synced-timer trace of the pre-bf16 loop)
-to 53084-53627 at 05a3d68 (a `scripts/train.py` run at that commit; 53627 is the median over 150 epochs / 20.1M
-steps in a longer run); see §3.6.
+05a3d68 plus the env step work in §3.7 (E1+E2+E3); physics/env/rollout(ckpt) are unchanged by §3.8 (PPO-loop only,
+no env-step effect), so those three rows still read at 05a3d68+§3.7. Training is the median SPS over epochs 3-12 of
+a `scripts/train.py` run, now at 05a3d68+§3.7+§3.8 (on top of 56bbeae). ⁸ training SPS: 36.6k pre-05a3d68 (a
+synced-timer trace of the pre-bf16 loop) to 53084-53627 at 05a3d68 (a `scripts/train.py` run at that commit; 53627 is
+the median over 150 epochs / 20.1M steps in a longer run); see §3.6. ⁹ training SPS at 05a3d68+§3.7+§3.8: 20-epoch
+back-to-back A/B, exclusive GPU, 58209 -> 59788 (+2.7%); 150-epoch curve runs, medians 58.6-58.8k -> 60.1-60.3k; see §3.8.
 
 ## 2. How to measure
 
@@ -209,7 +211,7 @@ median of 53627 over 20.1M steps at 05a3d68). Host syncs 1079 -> 186 per epoch. 
 20M steps is 2.4546/2.4435 for the two baseline seeds vs 2.4453 for bf16. LSTM policies smoke-train with bf16 on.
 **Risks/caveats.**
 - `mean_bound_loss` is logged but contributes no gradient: it's read once from a `torch.no_grad()` rollout forward
-  (pre-existing, not introduced here — see section 5).
+  (pre-existing, not introduced here). Fixed in §3.8.
 - `before_clip_grad_norm` and `loss/explained_variance` are not numerically comparable to pre-05a3d68 runs (the
   computation changed, not just the dtype).
 - LSTM hidden/cell state is kept fp32 across steps (`.float()` after the autocast block); only the MLP body runs in
@@ -252,6 +254,41 @@ rollout(ckpt) 84958 -> 97332; training 53084 -> 57900 (+9%). Syncs/step: env ~1.
 - The time-t "light" query that would skip `dof_pos`/`dof_vel` for reward+reset was not done; `get_motion_state` is
   unchanged, just called once instead of twice.
 
+### 3.8 PPO loop: last host syncs, fused Adam; bound-loss fix
+
+On top of `56bbeae`.
+
+**Problem.** At 4096 envs the epoch was ~2.26 s: rollout 1.23 s, update (GAE + PPO) 1.03 s. The rollout still had 4
+host syncs per step: `torch.where(mask)` (1, kept — needed for the data-dependent row count), `torch.normal`'s
+`std>=0` check inside `Normal.sample()` (2), and an H2D pageable copy of `env_id` in `Experience.store` (1).
+**Change.**
+- `policy.py`: a `Normal` subclass whose `sample()` returns `rsample()` under `no_grad()` — same distribution,
+  different RNG stream; `log_prob`/entropy unchanged.
+- `Experience.store` now stores the device row indices as env ids. `env_id` is `arange(num_envs)` for the single
+  native env `train.py` uses; a multi-worker vecenv would break this.
+- The `l2_init_reg` loop is skipped when `l2_reg_coef == 0` (it used to run over all params every minibatch).
+- `torch.optim.Adam(fused=...)` on CUDA only — fused Adam rejects CPU params, which isaacgym CPU runs use.
+**Result.**
+- Back-to-back A/B under an exclusive GPU, 20 epochs: 58209 -> 59788 SPS (+2.7%).
+- 150-epoch curve runs, 3 seed pairs: medians 58.6-58.8k -> 60.1-60.3k.
+- Learning curves within seed noise. Mean episode_length at epochs 50/100/150 (last-10 episode_return):
+
+  | seed | baseline | new |
+  |---|---|---|
+  | 1 | 5.51/6.50/7.05 (2.446) | 5.39/6.44/6.86 (2.435) |
+  | 2 | 5.53/6.43/6.87 (2.439) | 5.41/6.39/6.88 (2.431) |
+  | 3 | 5.31/6.36/6.77 (2.443) | 5.52/6.70/7.13 (2.445) |
+
+- Rollout syncs: 4 -> 1 per step.
+
+**Bound-loss fix (same change set).** `mean_bound_loss` used to be read once before the minibatch loop, which got
+the no-grad rollout value, so it never produced a gradient — it's now read right after each minibatch forward.
+`config.ini` sets `bound_coef = 0.0`, so training is unchanged; every past run effectively had it off (PHC used 10;
+that's untested here). The loss is still computed and logged, now with this update's real value.
+**Verification.** pytest 21 passed, 1 skipped; ruff clean. `train.py` smoke runs (512 envs) for PHCPolicy+Recurrent,
+LSTMActorPolicy+Recurrent, LSTMCriticPolicy+Recurrent, PHCPolicy with `bf16=False`/`compile=False`, and PHCPolicy
+with `bound_coef=10` — all pass. Codex review: one finding (fused Adam on CPU), fixed.
+
 ## 4. Tried and not taken
 
 | idea | result | why not |
@@ -268,12 +305,28 @@ rollout(ckpt) 84958 -> 97332; training 53084 -> 57900 (+9%). Syncs/step: env ~1.
 | `njmax=128` alone (vs 256) | +2% SPS @ N=4096 (142.4k vs 139.3k dense; 111.1k vs 107k sparse), no overflow | 256 kept for headroom over the observed 100-108 row peak (section 3.3); later corrected to 160 in §3.7's E2 |
 | Motion-lib query dedup (cache next step's task-obs state for reward) | +1.5% env / +1.0% rollout @ 4096 | below the 3% bar on its own; superseded by §3.7's E3, which merges the queries directly |
 | The "~7 ms in-graph gap" between `torch.profiler`'s kernel-sum and the measured step time | not real: nsys shows the physics CUDA graph ~97% busy, ~0.9 ms idle per control step | `torch.profiler` misses kernels launched inside the solver's conditional (while-loop) child graphs; since the gap isn't real, a two-stream split of the world (to fill it) isn't worth doing |
-| `torch.compile(policy, mode="reduce-overhead")` | crashes | its CUDA graph overwrites `policy.py`'s `mean_bound_loss` output before it's read; needs `clone()` or `torch.compiler.cudagraph_mark_step_begin()` |
-| `torch.compile(policy, mode="default")` | no SPS gain (fp32, 512 envs) | not retested with bf16 autocast on, or at full (4096-env) scale |
-| 8192 envs on 05a3d68 | physics 146k, env 119k SPS; ~10.5 GB VRAM (vs ~6 GB at 4096) | env scaled +14% over 4096, physics +5.5% — some headroom left, not pursued further this round |
+| `torch.compile(policy, mode="default")`, bf16 on, 4096 envs, on top of §3.8 | +0.6% SPS, ~15 s compile at start | the update is ~99% GPU-busy and GEMMs are 76% of it — little room for a compile win |
+| `torch.compile(policy, mode="reduce-overhead")`, bf16 on, 4096 envs, on top of §3.8 | -2% | no longer crashes (the bound loss is now read right after the forward, §3.8), but slower; same GPU-busy/GEMM ceiling as above |
+| `torch.compile(policy, mode="max-autotune-no-cudagraphs")`, bf16 on, 4096 envs, on top of §3.8 | +0.5%, ~5 min autotune | same ceiling; autotune cost isn't worth 0.5% |
+| Compile the post-physics env step (reward, reset flags, masked reset, obs) as one `torch.compile` region, `mujoco_gpu` only | direct `env.step` timing 31.64 -> ~29.9 ms (~+5.6% env SPS); per-region compile cuts kernel time 3-6x (obs 1.03->0.37 ms; motion query + reward + reset flags 0.47->0.08 ms); compiling all of `step()` was no better — falls back to eager around the simulate loop | unverified: no `--check` equivalence run, no bench A/B; compiled code draws `torch.rand` from a different stream, so a check needs `--fixed-reset-times`; the warp `eval_fk` call must sit outside the compiled region (`torch.compiler.disable`); costs 10-40 s of compile at the first step |
+| Per-control-step CUDA graph | buys nothing on its own | the env step is GPU-bound and launch overhead is already hidden; non-physics GPU work is 2.65 of 32.36 ms/step, so the ceiling is 8.2% env / ~6.3% rollout |
 | Custom physics kernels (patching newton or mujoco-warp internals beyond the existing `M_BLOCK_DENSE_MAX`/`block_dim` overrides) | not attempted | out of scope by user decision |
 
+8192 envs, on top of `56bbeae` plus §3.8's bound-loss fix:
+
+| envs | physics | env | rollout | env-side VRAM | training SPS |
+|---|---|---|---|---|---|
+| 4096 | 143.7k | 129.5k | 97.9k | 5.3 GB | 58.2k |
+| 8192 | 151.5k | 141.4k | 103.5k | 10.4 GB | 62.1k (131k batch, 16 steps/env) / 61.7k (262k batch) |
+
+That's +7% training SPS. Not taken: it changes the rollout length or the batch, so it needs a learning-curve check.
+NJMAX peak 92 of 160, no overflow.
+
 ## 5. Where time goes now, and next candidates
+
+Epoch split, 4096 envs, on top of 56bbeae + §3.8: rollout 1.23 s, update 1.03 s. The update is GPU-bound (GEMMs 76%
+of it, §4's `torch.compile` rows), so it can't get faster without fewer FLOPs. Rollout policy fwd+sample is
+~3.3 ms/step. The env step itself is physics graph 29.5 ms + 2.65 ms eager (post-physics, §3.7).
 
 In-graph kernel time, `physics` mode, newton_120 @ 4096 envs, from an `nsys stats --report cuda_gpu_kern_sum` run
 over several hundred control steps, 05a3d68 + E1+E2+E3 (§3.7): total in-graph time is about
@@ -283,26 +336,26 @@ Hessian Cholesky at ~2.85 + 1.93 ms, `mul_m` at ~1.3 ms, and narrowphase at ~1.2
 step is motion queries (~0.65, down from 5 calls to 2), reward/reset-flag/reset-env/refresh/obs bookkeeping (~2.0),
 GPU-bound rather than launch-bound now that E3 removed the CPU-launch-bound reset tail.
 
+**Physics-graph idle.** `nsys --cuda-graph-trace=node` shows each `simulate()` graph is ~97% busy, with
+~1.0 ms/control-step real idle. 0.8 ms of that is the ~25 us device-side relaunch of mujoco-warp's
+`wp.capture_while` solver loop, ~30x per step. `torch.profiler` can't see kernels inside conditional child graphs —
+it shows them as fake ~1.6 ms gaps after `set_conditional_if_handle_kernel` (a ~6.8 ms/step phantom).
+`opt.graph_conditional=False` unrolls to the full `opt.iterations` and is far slower (§4).
+
 Training-epoch time split after bf16 but before E3 (§3.6's commit, 4096 envs, full config, wall/epoch ~2.45 s):
 env-step send/recv ~53% of wall, policy forward (rollout + update combined) ~17%, and the PPO update's own
-backward+optimizer-step work ~1 s of that ~2.45 s. E3 then cut the env-step share further (see §3.7's result).
+backward+optimizer-step work ~1 s of that ~2.45 s. E3 then cut the env-step share further (see §3.7's result), and
+§3.8 then cut the update's remaining host syncs (see §3.8's result).
 
 Next candidates, roughly ranked, all estimates pending measurement:
 
-1. **Compile or CUDA-graph the post-physics env work** (obs/reward/reset), now that E3 made every shape fixed and
-   sync-free — extends the pattern from §3.4/§3.7.
-2. **One graph per control step** with the Newton gym-state conversions fused and done once per control step instead
-   of every substep, or a whole-step graph covering physics + post-physics work together.
-3. **Fused Adam and `torch.compile` under bf16 for the update.** The one tried `torch.compile` attempt (see section
-   4) predates bf16 and was fp32-only; worth retrying now that the update runs mixed precision.
-4. **GAE on the GPU**, removing the remaining CPU round trip in the update's advantage computation.
-5. **Re-test 8192 envs** on the current tree (last measured on 05a3d68, before E1-E3); env and physics both had
-   headroom at that point (section 4).
-6. **Fewer PPO update epochs or a smaller critic** — would change learning, not just speed; left to a deliberate
-   call rather than bundled into a throughput change.
-7. **Dense Cholesky is still the single largest in-graph kernel (~9.9 ms).** Further gains there need a faster
+1. **Finish the compiled post-physics step** (§4): direct `env.step` timing 31.64 -> ~29.9 ms, but unverified —
+   needs a `--check` equivalence run and a bench A/B.
+2. **8192 envs with a curve check**: +7% training SPS measured (§4), but it changes the rollout length/batch, so it
+   needs a learning-curve check before adoption.
+3. **Fewer PPO update epochs or a smaller critic** — training-dynamics tradeoffs; left to a deliberate call (the
+   user's) rather than bundled into a throughput change.
+4. **Turn `bound_coef` on with a curve check** — the gradient path is now correct (§3.8); PHC used 10, untested here.
+5. **GAE on the GPU**, removing the remaining CPU round trip in the update's advantage computation.
+6. **Dense Cholesky is still the single largest in-graph kernel (~9.9 ms).** Further gains there need a faster
    mujoco-warp factorization path or exploiting tree sparsity more than today's block-dense trade; not attempted.
-
-**Open doubt, not yet acted on:** `mean_bound_loss` is read once from a `torch.no_grad()` rollout forward
-(`policy.py`), so it never contributes a gradient to the loss it's added to in `clean_pufferl.train` — this predates
-both bf16 and the env-step work and hasn't been fixed.

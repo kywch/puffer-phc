@@ -12,6 +12,12 @@ def fp32(head, x):
         return head(x.float())
 
 
+class Normal(torch.distributions.Normal):
+    def sample(self, sample_shape=torch.Size()):
+        with torch.no_grad():  # torch.normal's std >= 0 check syncs the GPU
+            return self.rsample(sample_shape)
+
+
 class Recurrent(pufferlib.models.LSTMWrapper):
     def __init__(self, env, policy, input_size=512, hidden_size=512, num_layers=1):
         super().__init__(env, policy, input_size, hidden_size, num_layers)
@@ -180,7 +186,7 @@ class PHCPolicy(PolicyWithDiscriminator):
         if self._deterministic_action is True:
             std = torch.clamp(std, max=1e-6)
 
-        probs = torch.distributions.Normal(mu, std, validate_args=False)  # validation syncs the GPU
+        probs = Normal(mu, std, validate_args=False)  # validation syncs the GPU
 
         # Mean bound loss
         if self.training:
@@ -243,7 +249,7 @@ class LSTMCriticPolicy(PolicyWithDiscriminator):
         if self._deterministic_action is True:
             std = torch.clamp(std, max=1e-6)
 
-        probs = torch.distributions.Normal(mu, std, validate_args=False)  # validation syncs the GPU
+        probs = Normal(mu, std, validate_args=False)  # validation syncs the GPU
 
         # Mean bound loss
         if self.training:
@@ -304,7 +310,7 @@ class LSTMActorPolicy(PolicyWithDiscriminator):
         if self._deterministic_action is True:
             std = torch.clamp(std, max=1e-6)
 
-        probs = torch.distributions.Normal(mu, std, validate_args=False)  # validation syncs the GPU
+        probs = Normal(mu, std, validate_args=False)  # validation syncs the GPU
 
         # Mean bound loss
         if self.training:

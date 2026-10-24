@@ -68,7 +68,8 @@ def create(config, vecenv, policy, optimizer=None, run=None):
     if config.compile:
         policy = torch.compile(policy, mode=config.compile_mode)
 
-    optimizer = torch.optim.Adam(policy.parameters(), lr=config.learning_rate, eps=1e-5)
+    fused = torch.device(config.device).type == "cuda"  # fused Adam rejects CPU params (isaacgym CPU runs)
+    optimizer = torch.optim.Adam(policy.parameters(), lr=config.learning_rate, eps=1e-5, fused=fused)
 
     # Store initial policy weights for regenerative regularization
     # https://arxiv.org/pdf/2308.11958
@@ -138,7 +139,7 @@ def evaluate(data):
 
         with profile.eval_misc:
             amp_obs = data.vecenv.amp_obs if data.use_amp_obs else None
-            experience.store(o_device, amp_obs, value.flatten(), actions, logprob, r, d, env_id, idx)
+            experience.store(o_device, amp_obs, value.flatten(), actions, logprob, r, d, idx)
 
             for i in info:
                 for k, v in pufferlib.utils.unroll_nested_dict(i):
@@ -183,9 +184,6 @@ def train(data):
         if data.use_amp_obs:
             amp_obs_demo = data.vecenv.fetch_amp_obs_demo()  # [num_envs, amp_obs_size]
             amp_minibatch_size = amp_obs_demo.shape[0]
-
-        # Mean bound loss attribute
-        mean_bound_loss = getattr(data.policy.policy, "mean_bound_loss", None)
 
     # Compute adversarial reward. Note: discriminator doesn't get
     # updated as often this way, but GAE is more accurate
@@ -251,6 +249,8 @@ def train(data):
                         obs.reshape(-1, *data.vecenv.single_observation_space.shape),
                         action=atn,
                     )
+                # set by this forward; reading it before the loop got the no-grad rollout value
+                mean_bound_loss = getattr(data.policy.policy, "mean_bound_loss", None)
 
             with profile.train_misc:
                 logratio = newlogprob - log_probs.reshape(-1)
@@ -307,11 +307,10 @@ def train(data):
 
                 # Regenerative regularization, https://arxiv.org/pdf/2308.11958
                 l2_init_reg_loss = 0
-                for name, param in data.policy.named_parameters():
-                    if name in data.initial_params:
-                        l2_init_reg_loss += (param - data.initial_params[name]).pow(2).mean()
-
                 if config.l2_reg_coef > 0:
+                    for name, param in data.policy.named_parameters():
+                        if name in data.initial_params:
+                            l2_init_reg_loss += (param - data.initial_params[name]).pow(2).mean()
                     loss += l2_init_reg_loss * config.l2_reg_coef
 
             with profile.learn:
@@ -576,8 +575,8 @@ class Experience:
     def full(self):
         return self.ptr >= self.batch_size
 
-    def store(self, obs, amp_obs, value, action, logprob, reward, done, env_id, idx):
-        """idx: device indices of the rows to store (mask-selected); capped at the batch size"""
+    def store(self, obs, amp_obs, value, action, logprob, reward, done, idx):
+        """idx: device indices of the rows to store (mask-selected), also the env ids (env_id is arange); capped"""
         ptr = self.ptr
         indices = idx[: self.batch_size - ptr]
         end = ptr + len(indices)
@@ -591,7 +590,7 @@ class Experience:
         self.logprobs[ptr:end] = logprob[indices]
         self.rewards[ptr:end] = reward[indices]
         self.dones[ptr:end] = done[indices]
-        self.env_ids[ptr:end] = torch.as_tensor(env_id, device=self.device)[indices]
+        self.env_ids[ptr:end] = indices
         self.ptr = end
 
     def sort_training_data(self):
