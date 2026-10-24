@@ -15,12 +15,9 @@ dependencies = [
     "carbs@git+https://github.com/PufferAI/carbs.git",    
 ]
 
-[tool.pixi.project]
+[tool.pixi.workspace]
 channels = ["pytorch", "nvidia", "conda-forge"]
-platforms = ["linux-64"]
-
-[tool.pixi.system-requirements]
-cuda = "12.1"
+platforms = [{ name = "linux-64-cuda", platform = "linux-64", cuda = "12.1" }]
 
 [tool.pixi.dependencies]
 python = ">=3.8,<3.9"
@@ -52,6 +49,8 @@ aim = "==3.29.1"
 
 [tool.pixi.activation]
 scripts = ["env_setup.sh"]
+# the package is not installed; scripts import puffer_phc from the repo root
+env = { PYTHONPATH = "$PIXI_PROJECT_ROOT" }
 
 [tool.pixi.tasks]
 test_deps = "python -c 'import isaacgym, torch; print(torch.cuda.is_available())'"
@@ -61,10 +60,12 @@ build_gymtorch = "cd gymtorch; python setup.py clean; python setup.py develop"
 
 test = "pytest tests -q"
 
-# Newton / MuJoCo env (py3.12, no Isaac Gym): `pixi run -e newton ...`, e.g. `--env.backend mujoco_cpu`.
+# default: Newton / MuJoCo (py3.12, no Isaac Gym), for `--env.backend mujoco_cpu` / `mujoco_gpu`.
 # no-default-feature: [project] pins py3.8 and chumpy (fails on py>=3.11; SMPL pkls were re-saved without it).
+# isaacgym: the py3.8 Isaac Gym stack from the default feature: `pixi run -e isaacgym ...`.
 [tool.pixi.environments]
-newton = { features = ["newton"], no-default-feature = true }
+default = { features = ["newton"], no-default-feature = true }
+isaacgym = []
 
 [tool.pixi.feature.newton.dependencies]
 python = "3.12.*"
@@ -89,6 +90,9 @@ smpl_sim = { git = "https://github.com/kywch/SMPLSim.git" }
 carbs = { git = "https://github.com/PufferAI/carbs.git" }
 pufferlib = { git = "https://github.com/kywch/PufferLib.git", branch = "isaacgym" }
 pytest = ">=7.4,<9"
+
+[tool.pixi.feature.newton.activation]
+env = { PYTHONPATH = "$PIXI_PROJECT_ROOT" }
 
 [tool.pixi.feature.newton.tasks]
 test = "pytest tests -q --ignore=tests/test_isaacgym_backend.py"

@@ -12,6 +12,8 @@ This repo implements only the single primitive model, which can perform 99.0% of
 
 ## Getting Started
 
+The default path trains on the Newton/MuJoCo backends (Python 3.12, no Isaac Gym required). Isaac Gym is still supported as a legacy backend; see [Legacy: Isaac Gym](#legacy-isaac-gym) below.
+
 1. Clone this repository. 
     ```
     git clone https://github.com/kywch/puffer-phc.git
@@ -21,17 +23,83 @@ This repo implements only the single primitive model, which can perform 99.0% of
     cd puffer-phc
     ```
 
-2. Using pixi, setup the virutal environment and install the dependencies. Install pixi, if you haven't already. See [pixi documentation](https://pixi.sh/latest/#installation) for more details. The following command is for linux.
+2. Using pixi, setup the virtual environment and install the dependencies. Install pixi, if you haven't already. See [pixi documentation](https://pixi.sh/latest/#installation) for more details. The following command is for linux.
     ```
     curl -fsSL https://pixi.sh/install.sh | bash
     ```
 
-    The following command installs the dependencies and activate the virtual environment:
+    The following command installs the dependencies and activates the virtual environment:
     ```
     pixi shell
     ```
+    This activates the `default` environment (Python 3.12, newton + mujoco-warp, torch 2.12/cu130 — needs an NVIDIA driver that supports CUDA 13). `pixi shell` also sets `PYTHONPATH` to the repo root.
 
-3. Install Isaac Gym and gymtorch. Download and unzip Isaac Gym from [here](https://developer.nvidia.com/isaac-gym). Then. install isaacgym by running the following command inside the virtual environment:
+    It runs two backends: `mujoco_gpu` (mujoco-warp, batched on GPU, much faster) for training, and `mujoco_cpu` (MuJoCo C, one solver per env — not batched, so keep `--env.num-envs` small) for eval and debugging rather than as a training alternative.
+
+3. Download the SMPL parameters from [SMPL](https://smpl.is.tue.mpg.de/), and unzip them into `smpl` folder. Rename the files `basicmodel_neutral_lbs_10_207_0_v1.1.0`, `basicmodel_m_lbs_10_207_0_v1.1.0.pkl`, `basicmodel_f_lbs_10_207_0_v1.1.0.pkl` to `SMPL_NEUTRAL.pkl`, `SMPL_MALE.pkl` and `SMPL_FEMALE.pkl`.
+
+    The `default` environment's Python 3.12 can't load `chumpy`, so re-save the SMPL `.pkl` files with their chumpy arrays converted to numpy (only `shapedirs` is affected) before using the `default` env. In the `isaacgym` environment (which still has `chumpy`), for each of the three files:
+    ```python
+    import pickle
+    import numpy as np
+
+    path = "smpl/SMPL_NEUTRAL.pkl"  # and SMPL_MALE.pkl, SMPL_FEMALE.pkl
+    with open(path, "rb") as f:
+        data = pickle.load(f, encoding="latin1")
+    data["shapedirs"] = np.array(data["shapedirs"])
+    with open(path, "wb") as f:
+        pickle.dump(data, f)
+    ```
+
+4. Train a policy. `config.ini` defaults to `backend = mujoco_gpu` and `solver_preset = newton_120`:
+    ```
+    python scripts/train.py --config config.ini -m <MOTION FILE PATH>
+    ```
+
+    `--env.solver-preset` (mujoco backends only) selects the physics preset: `newton_180` (primary) or `newton_120` (fastest) for Newton-native training; `isaacgym_parity_240` or `isaacgym_parity_480` for evaluating checkpoints trained on Isaac Gym — these two are eval-only, not meant for training. See `docs/newton_mujoco_physics.md` and `docs/physics_solver.md` for details.
+
+    MuJoCo training presets are new; Isaac Gym is the validated training path so far (see `docs/newton_mujoco_physics.md`).
+
+    Add `--track` to log locally to Aim under `experiments/.aim`; view with `pixi run aim up --repo experiments --host 127.0.0.1 --port 43800`. Merge runs from another machine: `pixi run aim runs --repo <other>/experiments cp --destination experiments <run_hash>`.
+
+    To prepare your own motion data, please see the `convert_amass_data.py` script in the `scripts` folder. After conversion, you can visually inspect the data with the `vis_motion_mj.py` script.
+
+5. Play the trained policy. This opens a live viewer and needs a display (Newton ViewerGL on the mujoco backends; the Isaac Gym viewer on `isaacgym`):
+    ```
+    python scripts/train.py --mode play -c <CHECKPOINT PATH>
+    ```
+
+    Use the same solver preset the policy was trained with. For checkpoints trained on Isaac Gym, such as the shared AMASS checkpoints linked above, add `--env.solver-preset isaacgym_parity_240`.
+
+    For batch evaluation (e.g., using 4096 envs to evaluate AMASS 11313 motions), run:
+    ```
+    python scripts/train.py --mode eval -c <CHECKPOINT PATH> -m <MOTION FILE PATH>
+    ```
+
+6. Sweep the hyperparameters using CARBS.
+    ```
+    python scripts/train.py --config config.ini --mode sweep --tag <name>
+    ```
+
+    To adjust the sweep parameters and range, edit the `config.ini` file. You might need to comment/uncomment some parts in the `train.py` script, `sweep_carbs()` function to make the sweep work.
+
+    `--mode sweep` requires `--tag <name>`; every sweep trial is tracked and tagged in Aim. Filter in the Aim UI/search with `"<name>" in run.tags`.
+
+7. Run the tests.
+    ```
+    pixi run -e default test
+    ```
+
+## Legacy: Isaac Gym
+
+Isaac Gym (Python 3.8, pytorch 2.3.1/CUDA 12.1, Isaac Gym 1.0rc4) is kept as a legacy backend. It requires its own pixi environment and a manual Isaac Gym install.
+
+1. Activate the `isaacgym` environment:
+    ```
+    pixi shell -e isaacgym
+    ```
+
+2. Install Isaac Gym and gymtorch. Download and unzip Isaac Gym from [here](https://developer.nvidia.com/isaac-gym). Then, install isaacgym by running the following command inside the virtual environment:
     ```
     cd <isaac gym directory>/python
     pip install -e .
@@ -39,45 +107,37 @@ This repo implements only the single primitive model, which can perform 99.0% of
 
     Also, install gymtorch by running the following command inside the repository directory:
     ```
-    pixi run build_gymtorch
+    pixi run -e isaacgym build_gymtorch
     ```
     This gymtorch allows you to debug the isaac gym env inside VSCode.
-    
 
     You can test if the installation is successful by running:
     ```
-    pixi run test_deps
+    pixi run -e isaacgym test_deps
+    ```
+    This should print `True`.
+
+3. Download the SMPL parameters as in step 3 above (the original, chumpy-based `.pkl` files work as-is in the `isaacgym` environment; no re-save needed).
+
+4. Train a policy. `config.ini` defaults to `mujoco_gpu`, so pass `--env.backend isaacgym` here and in the commands below.
+    ```
+    python scripts/train.py --config config.ini -m <MOTION FILE PATH> --env.backend isaacgym
     ```
 
-4. Download the SMPL parameters from [SMPL](https://smpl.is.tue.mpg.de/), and unzip them into `smpl` folder. Rename the files `basicmodel_neutral_lbs_10_207_0_v1.1.0`, `basicmodel_m_lbs_10_207_0_v1.1.0.pkl`, `basicmodel_f_lbs_10_207_0_v1.1.0.pkl` to `SMPL_NEUTRAL.pkl`, `SMPL_MALE.pkl` and `SMPL_FEMALE.pkl`.
-
-5. Train a policy. In the virtual environment, run:
+5. Play the trained policy. This opens the Isaac Gym viewer and needs a display.
     ```
-    python scripts/train.py --config config.ini -m <MOTION FILE PATH>
-    ```
-
-    Add `--track` to log locally to Aim under `experiments/.aim`; view with `pixi run aim up --repo experiments --host 127.0.0.1 --port 43800`. Merge runs from another machine: `pixi run aim runs --repo <other>/experiments cp --destination experiments <run_hash>`.
-
-    To prepare your own motion data, please see the `convert_amass_data.py` script in the `scripts` folder. After conversion, you can visually inspect the data with the `vis_motion_mj.py` script.
-
-6. Play the trained policy. In the virtual environment, run:
-    ```
-    python scripts/train.py --mode play -c <CHECKPOINT PATH> 
+    python scripts/train.py --mode play -c <CHECKPOINT PATH> --env.backend isaacgym
     ```
 
     For batch evaluation (e.g., using 4096 envs to evaluate AMASS 11313 motions), run:
     ```
-    python scripts/train.py --mode eval -c <CHECKPOINT PATH>
+    python scripts/train.py --mode eval -c <CHECKPOINT PATH> -m <MOTION FILE PATH> --env.backend isaacgym
     ```
 
-7. Sweep the hyperparameters using CARBS.
+6. Run the tests.
     ```
-    python scripts/train.py --config config.ini --mode sweep
+    pixi run -e isaacgym test
     ```
-
-    To adjust the sweep parameters and range, edit the `config.ini` file. You might need to comment/uncomment some parts in the `train.py` script, `sweep_carbs()` function to make the sweep work.
-
-    `--mode sweep` requires `--tag <name>`; every sweep trial is tracked and tagged in Aim. Filter in the Aim UI/search with `"<name>" in run.tags`.
 
 
 # Notes

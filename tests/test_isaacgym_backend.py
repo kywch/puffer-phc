@@ -1,4 +1,4 @@
-"""Fast GPU checks for the Isaac Gym backend. Run with `pixi run test`."""
+"""Fast GPU checks for the Isaac Gym backend. Run with `pixi run -e isaacgym test`."""
 
 import os
 

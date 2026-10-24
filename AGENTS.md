@@ -1,6 +1,6 @@
 # puffer_phc
 
-PHC (Perpetual Humanoid Control) motion imitation trained with PufferLib on Isaac Gym. Training uses Isaac Gym (Python 3.8, `default` pixi env); MuJoCo CPU and GPU eval backends run in the `newton` pixi env (Python 3.12, newton main-branch pin / mujoco-warp 3.16, torch 2.12+cu130).
+PHC (Perpetual Humanoid Control) motion imitation trained with PufferLib on Isaac Gym. The MuJoCo CPU and GPU backends run in the `default` pixi env (Python 3.12, newton main-branch pin / mujoco-warp 3.16, torch 2.12+cu130); the Isaac Gym backend runs in the `isaacgym` pixi env (Python 3.8).
 
 ## Where it runs
 
@@ -16,18 +16,18 @@ docker exec -w /workspace/puffer_phc -e PYTHONPATH=/workspace/puffer_phc modest_
 
 - pixi lives in the container home (`~/.pixi/bin/pixi`) and is lost on container rebuild. Reinstall: `curl -fsSL https://pixi.sh/install.sh | bash`. The env itself (`.pixi/`) is on the bind mount and survives.
 - `pixi.lock` is gitignored. It was freshly resolved; the upstream lock had a stale `cuda-version-12.9-3` hash.
-- Stack: pytorch 2.3.1 + CUDA 12.1, Isaac Gym 1.0rc4 (`pip install -e ./isaacgym/python`), PufferLib fork `kywch/PufferLib@isaacgym`, smpl_sim.
-- `pixi run build_gymtorch` must have been run. Otherwise the repo's `gymtorch/` dir shadows Isaac Gym's and training fails with `module 'gymtorch' has no attribute 'wrap_tensor'`.
-- `PYTHONPATH` must be the repo root; the package is not installed.
-- Check: `pixi run test_deps` prints `True`.
+- `isaacgym` env stack: pytorch 2.3.1 + CUDA 12.1, Isaac Gym 1.0rc4 (`pip install -e ./isaacgym/python`), PufferLib fork `kywch/PufferLib@isaacgym`, smpl_sim.
+- `pixi run -e isaacgym build_gymtorch` must have been run. Otherwise the repo's `gymtorch/` dir shadows Isaac Gym's and training fails with `module 'gymtorch' has no attribute 'wrap_tensor'`.
+- `PYTHONPATH` must be the repo root; the package is not installed. pixi activation sets it.
+- Check: `pixi run -e isaacgym test_deps` prints `True`.
 
 Rebuild from scratch (inside the container):
 
 ```bash
-pixi install
-pixi run pip install -e ./isaacgym/python
-pixi run build_gymtorch
-pixi run test_deps
+pixi install --all
+pixi run -e isaacgym pip install -e ./isaacgym/python
+pixi run -e isaacgym build_gymtorch
+pixi run -e isaacgym test_deps
 ```
 
 ## Local files (not in git, excluded via `.git/info/exclude`)
@@ -41,7 +41,7 @@ pixi run test_deps
 
 The devcontainer cannot see `/windows`. Copy any other datasets into `data/`.
 
-The `smpl/SMPL_*.pkl` files were re-saved without chumpy (numpy `shapedirs`) so they load on Python 3.12. On other machines, re-save the SMPL pkls with chumpy arrays converted to numpy (only `shapedirs` is affected) before using the `newton` env.
+The `smpl/SMPL_*.pkl` files were re-saved without chumpy (numpy `shapedirs`) so they load on Python 3.12. On other machines, re-save the SMPL pkls with chumpy arrays converted to numpy (only `shapedirs` is affected) before using the `default` env.
 
 ## Commands
 
@@ -50,44 +50,44 @@ From `/workspace/puffer_phc` inside the container:
 ```bash
 export PATH=~/.pixi/bin:$PATH PYTHONPATH=$PWD
 
-# Train (config.ini defaults: 4096 envs, 500M steps; checkpoints and full eval every 1500 epochs under experiments/<exp_id>/)
-pixi run python scripts/train.py -m data/amass_train_take6_upright.pkl
+# Train on Isaac Gym (config.ini defaults: 4096 envs, 500M steps; checkpoints and full eval every 1500 epochs under experiments/<exp_id>/)
+pixi run -e isaacgym python scripts/train.py --env.backend isaacgym -m data/amass_train_take6_upright.pkl
 
 # Fine-tune from the pretrained policy
-pixi run python scripts/train.py -m data/amass_train_take6_upright.pkl -c ckpt_amass_800m_acc97.pt
+pixi run -e isaacgym python scripts/train.py --env.backend isaacgym -m data/amass_train_take6_upright.pkl -c ckpt_amass_800m_acc97.pt
 
 # Smoke test (~1 min)
-pixi run python scripts/train.py -m data/amass_train_take6_upright.pkl \
+pixi run -e isaacgym python scripts/train.py --env.backend isaacgym -m data/amass_train_take6_upright.pkl \
   --env.num-envs 512 --train.batch-size 16384 --train.minibatch-size 4096 --train.total-timesteps 200000
 
 # Eval (headless; writes eval_summary_MMDD_HHMM.json and results_by_motion_MMDD_HHMM.tsv next to the checkpoint)
-pixi run python scripts/train.py --mode eval -c ckpt_amass_800m_acc97.pt -m data/amass_train_take6_upright.pkl
+pixi run -e isaacgym python scripts/train.py --env.backend isaacgym --mode eval -c ckpt_amass_800m_acc97.pt -m data/amass_train_take6_upright.pkl
 
-# Eval on MuJoCo CPU (Newton SolverMuJoCo, one CPU solver per env; ~3.5 min for 129 motions with the default
+# Eval on MuJoCo CPU (Newton SolverMuJoCo, one CPU solver per env; ~3.5 min for 129 motions with the
 # isaacgym_parity_240 preset, ~6 min with isaacgym_parity_480)
-pixi run -e newton python scripts/train.py --mode eval -c ckpt_amass_800m_acc97.pt -m data/amass_train_take6_upright.pkl --env.backend mujoco_cpu --env.num-envs 129
+pixi run python scripts/train.py --mode eval -c ckpt_amass_800m_acc97.pt -m data/amass_train_take6_upright.pkl --env.backend mujoco_cpu --env.solver-preset isaacgym_parity_240 --env.num-envs 129
 
 # Same eval on the GPU (mujoco-warp, all envs batched in one solver; ~40 s)
-pixi run -e newton python scripts/train.py --mode eval -c ckpt_amass_800m_acc97.pt -m data/amass_train_take6_upright.pkl --env.backend mujoco_gpu --env.num-envs 129
+pixi run python scripts/train.py --mode eval -c ckpt_amass_800m_acc97.pt -m data/amass_train_take6_upright.pkl --env.backend mujoco_gpu --env.solver-preset isaacgym_parity_240 --env.num-envs 129
 
 # Tests (both envs define `test`, so -e is required)
 pixi run -e default test
-pixi run -e newton test
+pixi run -e isaacgym test
 ```
 
 Any `[section] key` in `config.ini` can be overridden as `--section.key-name`. Add `--track` to log locally to Aim under `experiments/.aim`; view with `pixi run aim up --repo experiments --host 127.0.0.1 --port 43800`. Merge runs from another machine: `pixi run aim runs --repo <other>/experiments cp --destination experiments <run_hash>`. `--mode sweep` requires `--tag <name>` (every trial is tracked and tagged); filter in the Aim UI/search with `"<name>" in run.tags`.
 
-`--mode play` opens an Isaac Gym viewer and needs X11; it has not been set up here.
+`--mode play` opens an Isaac Gym viewer and needs X11; it has not been set up here. On the mujoco backends, `--mode play` instead opens a Newton ViewerGL window (see `puffer_phc/backend/_newton_mujoco.py`); it also needs a display.
 
 The training dashboard is a rich live table. When stdout is redirected, the log shows only the frames that were printed, and the startup motion-key dump can look like a hang. Check GPU use or `experiments/` before assuming it is stuck.
 
 ## Sim backends
 
-- `[env] backend` in `config.ini` selects `isaacgym` (default), `mujoco_cpu` or `mujoco_gpu`.
+- `[env] backend` in `config.ini` selects `mujoco_gpu` (default, with `solver_preset = newton_120`), `mujoco_cpu` or `isaacgym`.
 - Code in `puffer_phc/backend/` (`base.py` docstring is the interface contract: tensor layouts and conventions).
 - `mujoco_cpu` (MuJoCo C, one solver per env) and `mujoco_gpu` (mujoco-warp, one batched solver, CUDA graph per `simulate()`) share the model build, presets and gym conversions in `backend/_newton_mujoco.py`. Both convert gym's per-joint rotation-vector dof_pos and map PD targets through the measured PhysX drive frame (`puffer_phc/assets/smpl_humanoid_drive_frame.txt`).
-- Their eval-parity physics is a `[env] solver_preset` (`--env.solver-preset`): `isaacgym_parity_240` (default, 8 x 1/240 s per control step, refsafe off) or `isaacgym_parity_480` (16 x 1/480 s, refsafe on, higher fidelity, ~2x the cost). Both use near-rigid contacts (solref 0.005) and per-body kp/kd gain scales (ankle/toe 0.2, hip/knee 0.8, torso/spine/chest 0.5) to emulate Isaac Gym's unconverged TGS solver. See `docs/physics_solver.md` for the settings and why.
-- Eval of `ckpt_amass_800m_acc97.pt` on mujoco_cpu (default `isaacgym_parity_240` preset): success 0.984, MPJPE 39.5 mm (vs gym's 0.992 / 37.4; remaining gap is physics, not a bug; eval has ±0.02 success run-to-run noise, see docs/physics_solver.md). On mujoco_gpu: 0.977 / 0.953, 39.4 / 40.8 mm (seeds 0/1; float32, solver tolerance 1e-6 vs 1e-8 on CPU; mujoco-warp >= 3.16 wraps ball-joint PD errors across pi natively, matching MuJoCo C), ~40 s wall vs ~3.5 min; raw ~55k env-steps/s at 4096 envs on an RTX 3090.
+- Their eval-parity physics is a `[env] solver_preset` (`--env.solver-preset`): `isaacgym_parity_240` (8 x 1/240 s per control step, refsafe off) or `isaacgym_parity_480` (16 x 1/480 s, refsafe on, higher fidelity, ~2x the cost). Both use near-rigid contacts (solref 0.005) and per-body kp/kd gain scales (ankle/toe 0.2, hip/knee 0.8, torso/spine/chest 0.5) to emulate Isaac Gym's unconverged TGS solver. See `docs/physics_solver.md` for the settings and why.
+- Eval of `ckpt_amass_800m_acc97.pt` on mujoco_cpu (`isaacgym_parity_240` preset): success 0.984, MPJPE 39.5 mm (vs gym's 0.992 / 37.4; remaining gap is physics, not a bug; eval has ±0.02 success run-to-run noise, see docs/physics_solver.md). On mujoco_gpu: 0.977 / 0.953, 39.4 / 40.8 mm (seeds 0/1; float32, solver tolerance 1e-6 vs 1e-8 on CPU; mujoco-warp >= 3.16 wraps ball-joint PD errors across pi natively, matching MuJoCo C), ~40 s wall vs ~3.5 min; raw ~55k env-steps/s at 4096 envs on an RTX 3090.
 - Inspect solver state via `backend.solvers[i].mj_model` / `.mj_data` (mujoco_cpu) or `backend.solver.mjw_model` / `.mjw_data` (mujoco_gpu, batched).
 - Newton-native training presets (no gym gain scales, contact tc 1/120): `newton_180` (6 x 1/180 s per control step) and `newton_120` (4 x 1/120 s, faster). See `docs/newton_mujoco_physics.md`.
 
