@@ -167,8 +167,11 @@ def test_finite_obs_after_steps(env):
 
 @NO_CUDA
 def test_gpu_matches_cpu():
-    # Same reset state and PD targets on both backends: 2 control steps (16 physics substeps) must agree.
+    # Same reset state and PD targets on both backends: 2 control steps (16 physics substeps) must agree. The head
+    # starts at 3 rad with its target at -3 rad: MuJoCo C servos toward the nearest representative, across pi.
     cpu, gpu = (make_env(backend, 2).env.backend for backend in (("mujoco_cpu", "cpu"), ("mujoco_gpu", "cuda")))
+    head = cpu.body_names.index("Head") - 1
+    cpu.dof_pos[:, 3 * head : 3 * head + 3] = torch.tensor([3.0, 0, 0])
     for name in ("root_states", "dof_pos", "dof_vel"):
         getattr(gpu, name)[:] = getattr(cpu, name).to(gpu.device)
     ids = torch.arange(2)
@@ -176,6 +179,7 @@ def test_gpu_matches_cpu():
         b.reset_envs(ids)
         b.refresh()
     target = cpu.dof_pos + 0.05
+    target[:, 3 * head : 3 * head + 3] = torch.linalg.solve(cpu._drive_frame[head], torch.tensor([-3.0, 0, 0]))
     for _ in range(2):
         cpu.step(target)
         gpu.step(target.to(gpu.device))
