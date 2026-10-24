@@ -96,11 +96,12 @@ class MujocoGPUBackend(SimBackend):
 
     def reset_envs(self, env_ids):
         """Push the root_states/dof_pos/dof_vel rows of env_ids to the sim; PD targets := dof_pos."""
+        env_ids = env_ids.to(self.device)  # index_fill_ below needs the ids on the device
         rows = (self.root_states[env_ids], self.dof_pos[env_ids], self.dof_vel[env_ids])
         self._q[env_ids], self._qd[env_ids], self._target[env_ids, 7:] = nc.gym_to_newton(self._drive_frame, *rows)
-        self._warmstart[env_ids] = 0  # drop the stale warm start; don't use solver.reset()
+        self._warmstart.index_fill_(0, env_ids, 0)  # drop the stale warm start; don't use solver.reset()
         mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        mask[env_ids] = True
+        mask.index_fill_(0, env_ids, True)
         newton.eval_fk(self.model, self.state.joint_q, self.state.joint_qd, self.state, mask=wp.from_torch(mask))
 
     def solver_stats(self):

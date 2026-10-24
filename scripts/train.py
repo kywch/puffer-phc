@@ -357,7 +357,7 @@ def rollout(vec_env, policy, eval_stats=None):
             else:
                 action, _, _, _ = policy(obs)
 
-            action = action.cpu().numpy().reshape(vec_env.action_space.shape)
+            action = action.reshape(vec_env.action_space.shape)
 
         obs, _, done, trunc, info = vec_env.step(action)
 

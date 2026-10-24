@@ -5,7 +5,7 @@ Modes (--mode, comma list; one step = one control step of all envs):
   physics  backend.simulate() x control_freq_inv (mujoco_gpu: graph launches + solver-stats reductions)
   backend  backend.step(targets): PD-target conversion + physics + refresh
   env      PHCPufferEnv.step on pre-generated seeded GPU action tensors (no numpy)
-  env_np   PHCPufferEnv.step(action_space.sample()), the numpy path training takes
+  env_np   PHCPufferEnv.step(action_space.sample()): numpy actions, H2D copy per step
   rollout  policy forward + vecenv recv/send as in clean_pufferl.evaluate, no PPO update (PPO side: train.py's Profile)
 Each (N, preset) of the comma lists runs in its own process (backends are never freed) and appends one JSON line per
 mode to --out. gpu_mem_gb: device memory taken since env creation, read after each mode (needs an idle GPU).
@@ -64,10 +64,6 @@ import torch
 
 from puffer_phc.environment import env_creator
 from puffer_phc.policy import PHCPolicy
-
-_from_numpy = torch.from_numpy
-# ponytail: lets PHCPufferEnv.step take a GPU tensor (env mode, clip_actions off) without an env change
-torch.from_numpy = lambda a: a if isinstance(a, torch.Tensor) else _from_numpy(a)
 
 
 class PhaseTimer:
@@ -139,7 +135,7 @@ def step_fns(env, policy):
         backend=lambda: b.step(target),
         env=lambda: env.step(acts[next(i) % 16]),
         env_np=lambda: env.step(env.action_space.sample()),
-        rollout=torch.no_grad()(lambda: (env.send(policy(env.observations)[0].cpu().numpy()), env.recv())),
+        rollout=torch.no_grad()(lambda: (env.send(policy(env.observations)[0]), env.recv())),
     )
 
 

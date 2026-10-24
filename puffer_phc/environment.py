@@ -5,7 +5,6 @@ import functools
 from puffer_phc.humanoid_phc import HumanoidPHC
 
 import torch
-import numpy as np
 
 import pufferlib
 
@@ -96,11 +95,8 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         self.episode_returns = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
         self.episode_lengths = torch.zeros(self.num_envs, dtype=torch.int32, device=self.device)
         self.episode_count = 0
-        self._infos = {
-            "episode_return": [],
-            "episode_length": [],
-            "truncated_rate": [],
-        }
+        # sums over finished episodes since the last log: return, length, truncations, count
+        self._ep_stats = torch.zeros(4, dtype=torch.float64, device=self.device)
 
         self.raw_rewards = torch.zeros(5, dtype=torch.float32, device=self.device)
 
@@ -119,16 +115,15 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         self.masks[:] = True
         self.actions[:] = 0
         self.raw_rewards[:] = 0
-        self._infos["episode_return"].clear()
-        self._infos["episode_length"].clear()
-        self._infos["truncated_rate"].clear()
+        self._ep_stats[:] = 0
 
         return self.observations, []
 
-    def step(self, actions_np):
+    def step(self, actions):
+        """actions: torch tensor (any device) or numpy array."""
+        self.actions[:] = torch.as_tensor(actions)
         if self.clip_actions:
-            actions_np = np.clip(actions_np, -1, 1)
-        self.actions[:] = torch.from_numpy(actions_np)
+            self.actions.clamp_(-1, 1)
 
         # obs, reward, done are put into the buffers
         self.env.step(self.actions)
@@ -146,36 +141,22 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         # Early-terminated envs are in self.env.extras["terminate"]
         # NOTE: Truncated does NOT mean all the all parts of the motion has been played out because
         # during reset, the initial frame is randomly selected, so it could start from the very end.
-        self.terminals[:] = False
-        self.truncations[:] = False
-        self.masks[:] = True
-        reset_indices = torch.nonzero(self.env.reset_buf).squeeze(-1)
+        done = self.env.reset_buf
+        self.terminals[:] = self.env.extras["terminate"]
+        self.truncations[:] = done & ~self.terminals
+        self.masks[:] = ~self.truncations
+        stats = torch.stack([self.episode_returns, self.episode_lengths, self.truncations, done]).double()
+        self._ep_stats += stats @ done.double()
+
+        reset_indices = torch.nonzero(done).squeeze(-1)  # the env's one sync: env.reset samples motions per env id
         if len(reset_indices) > 0:
             self.env.reset(reset_indices)
             self.episode_count += len(reset_indices)
-            self._infos["episode_return"] += self.episode_returns[reset_indices].tolist()
-            self._infos["episode_length"] += self.episode_lengths[reset_indices].tolist()
-            self.episode_returns[reset_indices] = 0
-            self.episode_lengths[reset_indices] = 0
+            self.episode_returns.index_fill_(0, reset_indices, 0)
+            self.episode_lengths.index_fill_(0, reset_indices, 0)
 
-            # Set terminals and truncations
-            term_envs = torch.nonzero(self.env.extras["terminate"]).squeeze(-1)
-            self.terminals[term_envs] = True
-            self._infos["truncated_rate"] += [0.0] * len(term_envs)
-
-            trunc_envs = reset_indices[~torch.isin(reset_indices, term_envs)]
-            self.truncations[trunc_envs] = True
-            self._infos["truncated_rate"] += [1.0] * len(trunc_envs)
-
-            # Mask out the truncations
-            self.masks[trunc_envs] = False
-
-            # Set rew to 0 for "terminated" envs
-            # CHECK ME: Useful? Not in the original PHC
-            # rew[term_envs] = 0
-
-        self.episode_returns[~self.env.reset_buf] += self.rewards[~self.env.reset_buf]
-        self.episode_lengths[~self.env.reset_buf] += 1
+        self.episode_returns += self.rewards * ~self.env.reset_buf
+        self.episode_lengths += ~self.env.reset_buf
 
         # TODO: self.env.extras has infos. Extract useful info?
         info = []
@@ -211,14 +192,9 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         # if len(self._infos["episode_return"]) < self.log_interval:
         #     return []
 
-        info = {
-            "episode_return": np.mean(self._infos["episode_return"]),
-            "episode_length": np.mean(self._infos["episode_length"]),
-            "epi_trunc_rate": np.mean(self._infos["truncated_rate"]),
-        }
-        self._infos["episode_return"].clear()
-        self._infos["episode_length"].clear()
-        self._infos["truncated_rate"].clear()
+        ret, length, trunc_rate, _ = (self._ep_stats / self._ep_stats[3]).tolist()  # nan if no episode ended
+        info = {"episode_return": ret, "episode_length": length, "epi_trunc_rate": trunc_rate}
+        self._ep_stats[:] = 0
 
         return [info]
 

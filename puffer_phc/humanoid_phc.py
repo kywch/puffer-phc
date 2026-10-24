@@ -589,7 +589,6 @@ class HumanoidPHC:
 
         self._motion_sample_start_idx = 0
         self._sampled_motion_ids = torch.arange(self.num_envs).to(self.device)
-        self.ref_motion_cache = {}
 
         self._amp_obs_buf = torch.zeros(
             (self.num_envs, self._num_amp_obs_steps, self._num_amp_obs_per_step),
@@ -717,9 +716,9 @@ class HumanoidPHC:
         self._reset_ref_motion_ids = motion_ids
         self._reset_ref_motion_times = motion_times
 
-        self._global_offset[env_ids] = 0  # Reset the global offset when resampling.
+        self._global_offset.index_fill_(0, env_ids, 0)  # Reset the global offset when resampling.
         self._motion_start_times[env_ids] = motion_times
-        self._motion_start_times_offset[env_ids] = 0  # Reset the motion time offsets
+        self._motion_start_times_offset.index_fill_(0, env_ids, 0)  # Reset the motion time offsets
         self._sampled_motion_ids[env_ids] = motion_ids
 
     def _reset_hybrid_state_init(self, env_ids):
@@ -738,10 +737,10 @@ class HumanoidPHC:
 
     def _reset_env_tensors(self, env_ids):
         self.backend.reset_envs(env_ids)
-        self.progress_buf[env_ids] = 0
-        self.reset_buf[env_ids] = 0
-        self._terminate_buf[env_ids] = 0
-        self._contact_forces[env_ids] = 0
+        self.progress_buf.index_fill_(0, env_ids, 0)
+        self.reset_buf.index_fill_(0, env_ids, 0)
+        self._terminate_buf.index_fill_(0, env_ids, 0)
+        self._contact_forces.index_fill_(0, env_ids, 0)
 
     def _init_amp_obs(self, env_ids):
         self._compute_amp_observations(env_ids)
@@ -830,28 +829,9 @@ class HumanoidPHC:
         )
 
     def _get_state_from_motionlib_cache(self, motion_ids, motion_times, offset=None):
-        ### Cache the motion + offset
-        if (
-            offset is None
-            or "motion_ids" not in self.ref_motion_cache
-            or self.ref_motion_cache["offset"] is None
-            or len(self.ref_motion_cache["motion_ids"]) != len(motion_ids)
-            or len(self.ref_motion_cache["offset"]) != len(offset)
-            or (self.ref_motion_cache["motion_ids"] - motion_ids).abs().sum()
-            + (self.ref_motion_cache["motion_times"] - motion_times).abs().sum()
-            + (self.ref_motion_cache["offset"] - offset).abs().sum()
-            > 0
-        ):
-            self.ref_motion_cache["motion_ids"] = motion_ids.clone()  # need to clone; otherwise will be overriden
-            self.ref_motion_cache["motion_times"] = motion_times.clone()  # need to clone; otherwise will be overriden
-            self.ref_motion_cache["offset"] = offset.clone() if offset is not None else None
-
-        else:
-            return self.ref_motion_cache
-
-        motion_res = self._motion_lib.get_motion_state(motion_ids, motion_times, offset=offset)
-        self.ref_motion_cache.update(motion_res)
-        return self.ref_motion_cache
+        # ponytail: no cache; checking the cached ids/times/offset forced a GPU sync per call. Recomputing costs one
+        # extra get_motion_state per step (_compute_reset repeats _compute_reward's query).
+        return self._motion_lib.get_motion_state(motion_ids, motion_times, offset=offset)
 
     def _set_env_state(
         self,

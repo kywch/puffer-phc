@@ -173,7 +173,7 @@ class PHCPolicy(PolicyWithDiscriminator):
         if self._deterministic_action is True:
             std = torch.clamp(std, max=1e-6)
 
-        probs = torch.distributions.Normal(mu, std)
+        probs = torch.distributions.Normal(mu, std, validate_args=False)  # validation syncs the GPU
 
         # Mean bound loss
         if self.training:
@@ -236,7 +236,7 @@ class LSTMCriticPolicy(PolicyWithDiscriminator):
         if self._deterministic_action is True:
             std = torch.clamp(std, max=1e-6)
 
-        probs = torch.distributions.Normal(mu, std)
+        probs = torch.distributions.Normal(mu, std, validate_args=False)  # validation syncs the GPU
 
         # Mean bound loss
         if self.training:
@@ -297,7 +297,7 @@ class LSTMActorPolicy(PolicyWithDiscriminator):
         if self._deterministic_action is True:
             std = torch.clamp(std, max=1e-6)
 
-        probs = torch.distributions.Normal(mu, std)
+        probs = torch.distributions.Normal(mu, std, validate_args=False)  # validation syncs the GPU
 
         # Mean bound loss
         if self.training:

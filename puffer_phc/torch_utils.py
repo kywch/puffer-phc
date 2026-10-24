@@ -98,7 +98,7 @@ def quat_to_angle_axis(q):
 
     mask = torch.abs(sin_theta) > min_theta
     default_axis = torch.zeros_like(axis)
-    default_axis[..., -1] = 1
+    default_axis[..., -1].fill_(1)
 
     angle = torch.where(mask, angle, torch.zeros_like(angle))
     mask_expand = mask.unsqueeze(-1)
@@ -112,8 +112,7 @@ def slerp(q0, q1, t):
     cos_half_theta = torch.sum(q0 * q1, dim=-1)
 
     neg_mask = cos_half_theta < 0
-    q1 = q1.clone()
-    q1[neg_mask] = -q1[neg_mask]
+    q1 = torch.where(neg_mask.unsqueeze(-1), -q1, q1)
     cos_half_theta = torch.abs(cos_half_theta)
     cos_half_theta = torch.unsqueeze(cos_half_theta, dim=-1)
 
@@ -286,11 +285,11 @@ def quat_to_tan_norm(q):
     # type: (Tensor) -> Tensor
     # represents a rotation using the tangent and normal vectors
     ref_tan = torch.zeros_like(q[..., 0:3])
-    ref_tan[..., 0] = 1
+    ref_tan[..., 0].fill_(1)
     tan = my_quat_rotate(q, ref_tan)
 
     ref_norm = torch.zeros_like(q[..., 0:3])
-    ref_norm[..., -1] = 1
+    ref_norm[..., -1].fill_(1)
     norm = my_quat_rotate(q, ref_norm)
 
     norm_tan = torch.cat([tan, norm], dim=len(tan.shape) - 1)
@@ -340,7 +339,7 @@ def exp_map_to_angle_axis(exp_map):
     angle = normalize_angle(angle)
 
     default_axis = torch.zeros_like(exp_map)
-    default_axis[..., -1] = 1
+    default_axis[..., -1].fill_(1)
 
     mask = torch.abs(angle) > min_theta
     angle = torch.where(mask, angle, torch.zeros_like(angle))
@@ -373,7 +372,7 @@ def calc_heading(q):
     # q must be normalized
     # this is the x axis heading
     ref_dir = torch.zeros_like(q[..., 0:3])
-    ref_dir[..., 0] = 1
+    ref_dir[..., 0].fill_(1)
     rot_dir = my_quat_rotate(q, ref_dir)
 
     heading = torch.atan2(rot_dir[..., 1], rot_dir[..., 0])
@@ -388,7 +387,7 @@ def calc_heading_quat(q):
     # q must be normalized
     heading = calc_heading(q)
     axis = torch.zeros_like(q[..., 0:3])
-    axis[..., 2] = 1
+    axis[..., 2].fill_(1)
 
     heading_q = quat_from_angle_axis(heading, axis)
     return heading_q
@@ -402,7 +401,7 @@ def calc_heading_quat_inv(q):
     # q must be normalized
     heading = calc_heading(q)
     axis = torch.zeros_like(q[..., 0:3])
-    axis[..., 2] = 1
+    axis[..., 2].fill_(1)
 
     heading_q = quat_from_angle_axis(-heading, axis)
     return heading_q
