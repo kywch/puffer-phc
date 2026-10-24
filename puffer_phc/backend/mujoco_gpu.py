@@ -24,6 +24,8 @@ class MujocoGPUBackend(SimBackend):
         super().__init__(device_type, device_id)
         assert device_type == "cuda", "the mujoco_gpu backend needs device_type=cuda"
         self.preset = nc.SOLVER_PRESETS[solver_preset]
+        self.headless = headless
+        self.viewer = None
 
     def load_asset(self, asset_file):
         self._xml, self.body_names, self.dof_props, self._drive_frame = nc.load_asset(asset_file, self.device)
@@ -56,6 +58,8 @@ class MujocoGPUBackend(SimBackend):
         self._stats_steps = 0
         atexit.register(lambda: print(self.solver_stats()))
         self.refresh()
+        if not self.headless:  # one N-world model/state already covers all envs; the viewer lays worlds out itself
+            self.viewer, self._render_t = nc.open_viewer(self.model), 0.0
 
     def refresh(self):
         nc.write_gym(self, self._q, self._qd, self._body_q, self._body_qd, self._qfrc)
@@ -104,5 +108,8 @@ class MujocoGPUBackend(SimBackend):
             f"{int(nefc_max)} (njmax {NJMAX}), overflow {overflow!r}"
         )
 
+    def render(self):
+        nc.render(self, self.state)
+
     def close(self):
-        pass
+        nc.close_viewer(self)

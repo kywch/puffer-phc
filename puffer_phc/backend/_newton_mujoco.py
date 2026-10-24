@@ -7,6 +7,7 @@ boundary: dof_pos = rotation vector per joint, dof_vel = child-frame relative an
 
 import itertools
 import os
+import sys
 import xml.etree.ElementTree as ET
 
 import mujoco
@@ -150,3 +151,31 @@ def gym_to_newton(drive_frame, root, dof_pos, dof_vel):
     joint_vel = quat_rotate(joint_quat, dof_vel.view(joint_quat.shape[:2] + (3,)))  # Newton ball qd: parent frame
     qd = torch.cat([root[:, 7:], joint_vel.flatten(1)], -1)
     return q, qd, pd_targets_to_newton(drive_frame, dof_pos)
+
+
+def open_viewer(model):
+    """A Newton ViewerGL on `model`; world offsets (if `model` has >1 world) are auto-computed by set_model()."""
+    from newton.viewer import ViewerGL  # heavy GL/pyglet import: only done for play mode (headless=False)
+
+    viewer = ViewerGL(vsync=True)  # vsync paces rendering to the display refresh; no manual sleep needed
+    viewer.set_model(model)
+    return viewer
+
+
+def render(backend, state):
+    """Pump one viewer frame for `state`. Exits the process once the window is closed, like the isaacgym backend."""
+    if backend.viewer is None:
+        return
+    if not backend.viewer.is_running():
+        close_viewer(backend)
+        sys.exit()
+    backend.viewer.begin_frame(backend._render_t)
+    backend.viewer.log_state(state)
+    backend.viewer.end_frame()
+    backend._render_t += backend.dt
+
+
+def close_viewer(backend):
+    if backend.viewer is not None:
+        backend.viewer.close()
+        backend.viewer = None

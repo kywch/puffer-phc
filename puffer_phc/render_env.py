@@ -64,11 +64,6 @@ class HumanoidRenderEnv(HumanoidPHC):
 
         self.state_record = defaultdict(list)
 
-    def step(self, actions):
-        obs, rewards, dones, infos = super().step(actions)
-        self.render()
-        return obs, rewards, dones, infos
-
     def render(self):
         if not self.viewer:
             return

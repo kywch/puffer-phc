@@ -152,6 +152,8 @@ class HumanoidPHC:
             self.extras["body_pos"] = body_pos.cpu().numpy()
             self.extras["body_pos_gt"] = motion_res["rg_pos"].cpu().numpy()
 
+        self.render()  # no-op for headless backends; HumanoidRenderEnv overrides render(), not step()
+
         # obs, reward, done, info
         return self.obs_buf, self.rew_buf, self.reset_buf, self.extras
 
