@@ -27,14 +27,18 @@ GYM_TGS_GAIN_SCALE = {
     "L_Hip": 0.8, "R_Hip": 0.8, "L_Knee": 0.8, "R_Knee": 0.8,
     "Torso": 0.5, "Spine": 0.5, "Chest": 0.5,
 }  # fmt: skip
-# name: physics dt, steps per simulate(), contact solref, refsafe on/off, gym-TGS gain scales. Both are eval-parity
-# settings for gym-trained checkpoints, not training presets. refsafe clamps contact timeconst >= 2*dt; a 1/120-scale
-# config (tc >= 1/60) makes loaded feet slip 3-6x more than PhysX, hence the finer dt. See docs/physics_solver.md.
+# name: physics dt, steps per simulate() (2 simulate() per 1/30 s control step), contact solref, refsafe on/off,
+# gym-TGS gain scales. refsafe clamps contact timeconst >= 2*dt.
 SOLVER_PRESETS = {
+    # Eval parity for gym-trained checkpoints, not training presets. A 1/120-scale config (tc >= 1/60) makes loaded
+    # feet slip 3-6x more than PhysX, hence the finer dt. See docs/physics_solver.md.
     # Default: half the physics cost of isaacgym_parity_480, refsafe off. 0.984 success / 39.5 mm MPJPE.
     "isaacgym_parity_240": dict(dt=1 / 240, substeps=4, solref=(0.005, 1.0), refsafe=False, gains=GYM_TGS_GAIN_SCALE),
     # Higher-fidelity reference, refsafe on. 0.977/0.961 success, 38.7/39.1 mm MPJPE (seeds 0/1).
     "isaacgym_parity_480": dict(dt=1 / 480, substeps=8, solref=(0.005, 1.0), refsafe=True, gains=GYM_TGS_GAIN_SCALE),
+    # Newton-native training presets (no gym gains, contact tc 1/120); see docs/newton_mujoco_physics.md.
+    "newton_180": dict(dt=1 / 180, substeps=3, solref=(1 / 120, 1.0), refsafe=False, gains={}),  # 6 steps/control step
+    "newton_120": dict(dt=1 / 120, substeps=2, solref=(1 / 120, 1.0), refsafe=False, gains={}),  # 4 steps/control step
 }
 
 

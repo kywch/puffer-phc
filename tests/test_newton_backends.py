@@ -142,7 +142,7 @@ def test_pd_gains_match_xml(env):
 
 
 @pytest.mark.parametrize("backend", BACKENDS, ids=lambda p: p[0])
-@pytest.mark.parametrize("preset", ["isaacgym_parity_240", "isaacgym_parity_480"])
+@pytest.mark.parametrize("preset", ["isaacgym_parity_240", "isaacgym_parity_480", "newton_180", "newton_120"])
 def test_solver_presets(backend, preset):
     # Each preset must build and step finitely, with refsafe set as the preset declares.
     from puffer_phc.backend._newton_mujoco import SOLVER_PRESETS
