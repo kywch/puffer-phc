@@ -271,29 +271,23 @@ def quat_rotate(rot, vec):
 # copied from https://github.com/ZhengyiLuo/PHC/blob/master/phc/utils/torch_utils.py#L46
 @torch.jit.script
 def my_quat_rotate(q, v):
-    shape = q.shape
     q_w = q[:, -1]
     q_vec = q[:, :3]
     a = v * (2.0 * q_w**2 - 1.0).unsqueeze(-1)
     b = torch.cross(q_vec, v, dim=-1) * q_w.unsqueeze(-1) * 2.0
-    c = q_vec * torch.bmm(q_vec.view(shape[0], 1, 3), v.view(shape[0], 3, 1)).squeeze(-1) * 2.0
+    c = q_vec * (q_vec * v).sum(-1, keepdim=True) * 2.0  # bmm here became one cuBLAS gemv per call
     return a + b + c
 
 
 @torch.jit.script
 def quat_to_tan_norm(q):
     # type: (Tensor) -> Tensor
-    # represents a rotation using the tangent and normal vectors
-    ref_tan = torch.zeros_like(q[..., 0:3])
-    ref_tan[..., 0].fill_(1)
-    tan = my_quat_rotate(q, ref_tan)
-
-    ref_norm = torch.zeros_like(q[..., 0:3])
-    ref_norm[..., -1].fill_(1)
-    norm = my_quat_rotate(q, ref_norm)
-
-    norm_tan = torch.cat([tan, norm], dim=len(tan.shape) - 1)
-    return norm_tan
+    # represents a rotation using the tangent and normal vectors: my_quat_rotate of the x and z axes, closed form
+    x, y, z, w = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
+    ww = 2.0 * w * w - 1.0
+    tan = [ww + 2.0 * x * x, 2.0 * (w * z + x * y), 2.0 * (x * z - w * y)]
+    norm = [2.0 * (w * y + x * z), 2.0 * (y * z - w * x), ww + 2.0 * z * z]
+    return torch.stack(tan + norm, dim=-1)
 
 
 @torch.jit.script

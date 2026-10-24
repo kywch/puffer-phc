@@ -123,14 +123,11 @@ class HumanoidPHC:
         # This is after stepping, so progress buffer got + 1. Compute reset/reward do not need to forward 1 timestep since they are for "this" frame now.
         self.progress_buf += 1
 
-        self._compute_reward()
-
-        # NOTE: Which envs must be reset is computed here, but the envs get reset outside the env
-        self._compute_reset()
-
-        # TODO: Move the code for resetting the env here?
-
-        self._compute_observations()  # observation for the next step.
+        # reward, reset and eval all compare against the reference at this frame
+        motion_times = self.progress_buf * self.dt + self._motion_start_times + self._motion_start_times_offset
+        motion_res = self._get_state_from_motionlib_cache(self._sampled_motion_ids, motion_times, self._global_offset)
+        self._compute_reward(motion_res)
+        self._compute_reset(motion_res)
 
         self.extras["terminate"] = self._terminate_buf.clone()
         self.extras["reward_raw"] = self.reward_raw.detach()
@@ -141,21 +138,19 @@ class HumanoidPHC:
             self.extras["amp_obs"] = self.amp_obs  ## ZL: hooks for adding amp_obs for training
 
         if self.flag_im_eval:
-            motion_times = (
-                (self.progress_buf) * self.dt + self._motion_start_times + self._motion_start_times_offset
-            )  # already has time + 1, so don't need to + 1 to get the target for "this frame"
-            motion_res = self._get_state_from_motionlib_cache(
-                self._sampled_motion_ids, motion_times, self._global_offset
-            )  # pass in the env_ids such that the motion is in synced.
             body_pos = self._rigid_body_pos
             self.extras["mpjpe"] = (body_pos - motion_res["rg_pos"]).norm(dim=-1).mean(dim=-1)
             self.extras["body_pos"] = body_pos.cpu().numpy()
             self.extras["body_pos_gt"] = motion_res["rg_pos"].cpu().numpy()
 
+        done = self.reset_buf.clone()
+        self._reset_masked(done)
+        self._compute_observations()  # observation for the next step, after the reset
+
         self.render()  # no-op for headless backends; HumanoidRenderEnv overrides render(), not step()
 
         # obs, reward, done, info
-        return self.obs_buf, self.rew_buf, self.reset_buf, self.extras
+        return self.obs_buf, self.rew_buf, done, self.extras
 
     def render(self):
         self.backend.render()
@@ -666,6 +661,29 @@ class HumanoidPHC:
         if self.use_amp_obs:
             self._init_amp_obs(env_ids)
 
+    def _reset_masked(self, mask):
+        """_reset_envs for the envs where mask is set, as full-batch ops: no host sync. Ref-state init only."""
+        assert self._state_init in (StateInit.Random, StateInit.Start) and not self.use_amp_obs
+        ids = self._sampled_motion_ids
+        if self._state_init == StateInit.Random and not self.flag_test:
+            times = self._sample_time(ids)
+        else:
+            times = torch.zeros_like(self._motion_start_times)
+        res = self._get_state_from_motionlib_cache(ids, times, self._global_offset)
+        m = mask[:, None]
+        root = torch.cat([res["root_pos"], res["root_rot"], res["root_vel"], res["root_ang_vel"]], -1)
+        self._humanoid_root_states[:] = torch.where(m, root, self._humanoid_root_states)
+        self._dof_pos[:] = torch.where(m, res["dof_pos"], self._dof_pos)
+        self._dof_vel[:] = torch.where(m, res["dof_vel"], self._dof_vel)
+        self._global_offset.masked_fill_(m, 0)
+        self._motion_start_times[:] = torch.where(mask, times, self._motion_start_times)
+        self._motion_start_times_offset.masked_fill_(mask, 0)
+        self.backend.reset_envs(mask)
+        for buf in (self.progress_buf, self.reset_buf, self._terminate_buf):
+            buf.masked_fill_(mask, 0)
+        self._contact_forces.masked_fill_(mask[:, None, None], 0)
+        self.backend.refresh()  # rigid body state of the reset envs comes from the sim's FK
+
     def _reset_actors(self, env_ids):
         if self._state_init == StateInit.Default:
             self._reset_default(env_ids)
@@ -736,7 +754,7 @@ class HumanoidPHC:
             self._reset_default(default_reset_ids)
 
     def _reset_env_tensors(self, env_ids):
-        self.backend.reset_envs(env_ids)
+        self.backend.reset_envs(torch.zeros_like(self.reset_buf).index_fill_(0, env_ids, True))
         self.progress_buf.index_fill_(0, env_ids, 0)
         self.reset_buf.index_fill_(0, env_ids, 0)
         self._terminate_buf.index_fill_(0, env_ids, 0)
@@ -829,8 +847,7 @@ class HumanoidPHC:
         )
 
     def _get_state_from_motionlib_cache(self, motion_ids, motion_times, offset=None):
-        # ponytail: no cache; checking the cached ids/times/offset forced a GPU sync per call. Recomputing costs one
-        # extra get_motion_state per step (_compute_reset repeats _compute_reward's query).
+        # no cache: checking cached ids/times forced a GPU sync per call; step() shares one query instead
         return self._motion_lib.get_motion_state(motion_ids, motion_times, offset=offset)
 
     def _set_env_state(
@@ -1162,17 +1179,11 @@ class HumanoidPHC:
 
         return pd_tar
 
-    def _compute_reward(self):
+    def _compute_reward(self, motion_res):
         body_pos = self._rigid_body_pos
         body_rot = self._rigid_body_rot
         body_vel = self._rigid_body_vel
         body_ang_vel = self._rigid_body_ang_vel
-
-        motion_times = (
-            self.progress_buf * self.dt + self._motion_start_times + self._motion_start_times_offset
-        )  # reward is computed after physics step, and progress_buf is already updated for next time step.
-
-        motion_res = self._get_state_from_motionlib_cache(self._sampled_motion_ids, motion_times, self._global_offset)
 
         (
             ref_rb_pos,
@@ -1239,13 +1250,11 @@ class HumanoidPHC:
             self.rew_buf[:] += power_reward
             self.reward_raw[:, -1] = power_reward
 
-    def _compute_reset(self):
+    def _compute_reset(self, motion_res):
         time = (
             (self.progress_buf) * self.dt + self._motion_start_times + self._motion_start_times_offset
         )  # Reset is also called after the progress_buf is updated.
         pass_time = time >= self._motion_lib._motion_lengths
-
-        motion_res = self._get_state_from_motionlib_cache(self._sampled_motion_ids, time, self._global_offset)
 
         body_pos = self._rigid_body_pos[..., self._reset_bodies_id, :].clone()
         ref_body_pos = motion_res["rg_pos"][..., self._reset_bodies_id, :].clone()

@@ -228,9 +228,11 @@ class IsaacGymBackend(SimBackend):
         self.gym.fetch_results(self.sim, True)
         self.refresh()
 
-    def reset_envs(self, env_ids):
-        """Push the root_states/dof_pos/dof_vel rows of env_ids to the sim; PD targets := dof_pos."""
-        env_ids_int32 = self.actor_ids[env_ids]
+    def reset_envs(self, mask):
+        """Push the root_states/dof_pos/dof_vel rows where mask is set to the sim; PD targets := dof_pos."""
+        env_ids_int32 = self.actor_ids[mask]
+        if len(env_ids_int32) == 0:  # PhysX's indexed setters reject empty index tensors
+            return
 
         self.gym.set_actor_root_state_tensor_indexed(
             self.sim,

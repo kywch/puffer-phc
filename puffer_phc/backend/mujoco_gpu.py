@@ -6,6 +6,7 @@ world: no inter-env contact, independent constraint solve. Inspect the solver vi
 """
 
 import atexit
+import warnings
 
 import mujoco_warp
 import newton
@@ -15,7 +16,9 @@ import warp as wp
 
 from puffer_phc.backend import _newton_mujoco as nc
 
-NCONMAX, NJMAX = 200, 256  # per world; observed peak 108 constraint rows (last substep only); overflow is flagged
+# per world. Rows: 4 per contact (pyramidal, condim 3) + active joint limits; peak 96 over all substeps (random actions).
+# Grows with falls/lying poses, self-collision and model/geom changes; overflow drops rows (bodies sink), is flagged.
+NCONMAX, NJMAX = 200, 160
 
 
 class MujocoGPUBackend(nc.NewtonMujocoBackend):
@@ -85,22 +88,28 @@ class MujocoGPUBackend(nc.NewtonMujocoBackend):
             self.simulate()
         self.refresh()
 
-    def reset_envs(self, env_ids):
-        """Push the root_states/dof_pos/dof_vel rows of env_ids to the sim; PD targets := dof_pos."""
-        env_ids = env_ids.to(self.device)  # index_fill_ below needs the ids on the device
-        rows = (self.root_states[env_ids], self.dof_pos[env_ids], self.dof_vel[env_ids])
-        self._q[env_ids], self._qd[env_ids], self._target[env_ids, 7:] = nc.gym_to_newton(self._drive_frame, *rows)
-        self._warmstart.index_fill_(0, env_ids, 0)  # drop the stale warm start; don't use solver.reset()
-        mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        mask.index_fill_(0, env_ids, True)
+    def reset_envs(self, mask):
+        """Push the root_states/dof_pos/dof_vel rows where mask is set to the sim; PD targets := dof_pos."""
+        q, qd, target = nc.gym_to_newton(self._drive_frame, self.root_states, self.dof_pos, self.dof_vel)
+        m = mask[:, None]  # torch.where over all envs: boolean indexing would sync
+        self._q[:], self._qd[:] = torch.where(m, q, self._q), torch.where(m, qd, self._qd)
+        self._target[:, 7:] = torch.where(m, target, self._target[:, 7:])
+        self._warmstart.masked_fill_(m, 0)  # drop the stale warm start; don't use solver.reset()
         newton.eval_fk(self.model, self.state.joint_q, self.state.joint_qd, self.state, mask=wp.from_torch(mask))
+
+    def overflow(self):
+        """Solver overflow flags (sticky), all worlds OR-ed. Syncs."""
+        return mujoco_warp.OverflowType(int(np.bitwise_or.reduce(self.solver.mjw_data.overflow.numpy())))
+
+    def warn_overflow(self):
+        if overflow := self.overflow():
+            warnings.warn(f"MuJoCo Warp {overflow!r}: constraint rows or contacts dropped; raise NJMAX/NCONMAX")
 
     def solver_stats(self):
         steps = max(self._stats_steps, 1)
         (niter, nefc), (niter_max, nefc_max) = self._stats_sum.tolist(), self._stats_max.tolist()
-        overflow = mujoco_warp.OverflowType(int(np.bitwise_or.reduce(self.solver.mjw_data.overflow.numpy())))
         return (
             f"MuJoCo Warp solver over {self._stats_steps} env-steps (last substep of each simulate()): iterations "
             f"mean {niter / steps:.1f} max {int(niter_max)}, constraint rows mean {nefc / steps:.1f} max "
-            f"{int(nefc_max)} (njmax {NJMAX}), overflow {overflow!r}"
+            f"{int(nefc_max)} (njmax {NJMAX}), overflow {self.overflow()!r}"
         )

@@ -54,7 +54,7 @@ def test_reset_envs_round_trip(env):
     root, dof_pos, dof_vel = root.to(b.device), dof_pos.to(b.device), dof_vel.to(b.device)
 
     b.root_states[ids], b.dof_pos[ids], b.dof_vel[ids] = root, dof_pos, dof_vel
-    b.reset_envs(ids)
+    b.reset_envs(torch.tensor([False, True, False, True], device=b.device))
     b.refresh()
 
     assert torch.allclose(b.dof_pos[ids], dof_pos, atol=1e-5)
@@ -106,9 +106,8 @@ def test_dof_force_sign(env, monkeypatch):
     e, b = env.env, env.env.backend
     monkeypatch.setitem(b.preset, "substeps", 1)
     e.reset()
-    ids = torch.arange(b.num_envs)
     b.dof_vel[:], b.root_states[:, 7:] = 0, 0
-    b.reset_envs(ids)
+    b.reset_envs(torch.ones(b.num_envs, dtype=torch.bool, device=b.device))
     b.refresh()
     q = b.dof_pos.clone()
     nj = b.num_dof // 3
@@ -174,9 +173,8 @@ def test_gpu_matches_cpu():
     cpu.dof_pos[:, 3 * head : 3 * head + 3] = torch.tensor([3.0, 0, 0])
     for name in ("root_states", "dof_pos", "dof_vel"):
         getattr(gpu, name)[:] = getattr(cpu, name).to(gpu.device)
-    ids = torch.arange(2)
     for b in (cpu, gpu):
-        b.reset_envs(ids)
+        b.reset_envs(torch.ones(2, dtype=torch.bool, device=b.device))
         b.refresh()
     target = cpu.dof_pos + 0.05
     target[:, 3 * head : 3 * head + 3] = torch.linalg.solve(cpu._drive_frame[head], torch.tensor([-3.0, 0, 0]))
