@@ -16,7 +16,7 @@ import warp as wp
 from puffer_phc.backend import _newton_mujoco as nc
 from puffer_phc.backend.base import SimBackend
 
-NCONMAX, NJMAX = 200, 256  # per world; measured max 84 constraint rows (~21 pyramidal condim-3 contacts) at 4096 envs
+NCONMAX, NJMAX = 200, 256  # per world; observed peak 108 constraint rows (last substep only); overflow is flagged
 
 
 class MujocoGPUBackend(SimBackend):
