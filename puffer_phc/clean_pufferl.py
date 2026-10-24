@@ -141,12 +141,8 @@ def evaluate(data):
             else:
                 actions, logprob, _, value = policy(o_device)
 
-            if config.device == "cuda":
-                torch.cuda.synchronize()
-
         with profile.eval_misc:
             value = value.flatten()
-            actions = actions.cpu().numpy()
             mask = torch.as_tensor(mask)  # * policy.mask)
             o = o if config.cpu_offload else o_device
 
@@ -631,7 +627,7 @@ class Experience:
             self.amp_obs[ptr:end] = amp_obs.to(self.amp_obs.device)[indices]
 
         self.values_np[ptr:end] = value.cpu().numpy()[indices]
-        self.actions_np[ptr:end] = action[indices]
+        self.actions_np[ptr:end] = action.cpu().numpy()[indices]
         self.logprobs_np[ptr:end] = logprob.cpu().numpy()[indices]
         self.rewards_np[ptr:end] = reward.cpu().numpy()[indices]
         self.dones_np[ptr:end] = done.cpu().numpy()[indices]
@@ -752,7 +748,7 @@ def try_load_checkpoint(data):
         return
 
     trainer_path = os.path.join(path, "trainer_state.pt")
-    resume_state = torch.load(trainer_path)
+    resume_state = torch.load(trainer_path, weights_only=False)
     model_path = os.path.join(path, resume_state["model_name"])
     data.policy.uncompiled.load_state_dict(model_path, map_location=config.device)
     data.optimizer.load_state_dict(resume_state["optimizer_state_dict"])

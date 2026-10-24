@@ -1,3 +1,4 @@
+# ruff: noqa: E402  # isaacgym's backend-peek must run before any heavier (torch-importing) import below
 import os
 import gc
 import ast
@@ -14,7 +15,24 @@ import joblib
 from tqdm import tqdm
 from rich_argparse import RichHelpFormatter
 
-import isaacgym  # noqa
+from puffer_phc.backend import preload_isaacgym
+
+
+def _peek_backend(argv):
+    """Peek at [env] backend (config.ini / --config / --env.backend) before any heavier import runs:
+    isaacgym must be imported before torch (see puffer_phc.backend.preload_isaacgym)."""
+    peek = argparse.ArgumentParser(add_help=False)
+    peek.add_argument("--config", default="config.ini")
+    peek.add_argument("--env.backend", dest="backend", default=None)
+    known = peek.parse_known_args(argv)[0]
+    if known.backend is not None:
+        return known.backend
+    p = configparser.ConfigParser()
+    p.read(known.config)
+    return p.get("env", "backend", fallback="isaacgym").strip("\"'")
+
+
+preload_isaacgym(_peek_backend(sys.argv[1:]))
 
 import torch
 import numpy as np
@@ -339,7 +357,7 @@ def rollout(vec_env, policy, eval_stats=None):
             else:
                 action, _, _, _ = policy(obs)
 
-            action = action.cpu().numpy().reshape(vec_env.action_space.shape)
+            action = action.reshape(vec_env.action_space.shape)
 
         obs, _, done, trunc, info = vec_env.step(action)
 
@@ -641,7 +659,7 @@ if __name__ == "__main__":
     policy = make_policy(vec_env.driver_env, policy_cls, rnn_cls, args)
 
     if args["checkpoint_path"]:
-        checkpoint = torch.load(args["checkpoint_path"], map_location=device)
+        checkpoint = torch.load(args["checkpoint_path"], map_location=device, weights_only=False)
         policy.load_state_dict(checkpoint["state_dict"])
         print(f"Loaded checkpoint from {args['checkpoint_path']}")
 

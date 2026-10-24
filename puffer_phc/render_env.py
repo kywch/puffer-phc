@@ -34,8 +34,6 @@ class HumanoidRenderEnv(HumanoidPHC):
     def __init__(
         self,
         cfg,
-        sim_params=None,
-        physics_engine=gymapi.SIM_PHYSX,
         device_type="cuda",
         device_id=0,  # Allow multi-gpu setting
         headless=True,
@@ -48,7 +46,7 @@ class HumanoidRenderEnv(HumanoidPHC):
         # Reset the init state to the start of the motion
         cfg["env"]["state_init"] = "Start"
 
-        super().__init__(cfg, sim_params, physics_engine, device_type, device_id, headless)
+        super().__init__(cfg, device_type, device_id, headless)
 
         # If running with a viewer, set up keyboard shortcuts and camera
         self._create_viewer()
@@ -65,11 +63,6 @@ class HumanoidRenderEnv(HumanoidPHC):
             self.change_char_color()
 
         self.state_record = defaultdict(list)
-
-    def step(self, actions):
-        obs, rewards, dones, infos = super().step(actions)
-        self.render()
-        return obs, rewards, dones, infos
 
     def render(self):
         if not self.viewer:
@@ -250,6 +243,8 @@ class HumanoidRenderEnv(HumanoidPHC):
             self.gym.viewer_camera_look_at(self.viewer, None, self._init_cam_pos, self._init_cam_target)
 
     def _create_envs(self):
+        b = self.backend
+        self.gym, self.sim, self.viewer = b.gym, b.sim, b.viewer
         if self.viewer or self.flag_server_mode:
             self._marker_handles = [[] for _ in range(self.num_envs)]
             self._load_marker_asset()
@@ -258,7 +253,10 @@ class HumanoidRenderEnv(HumanoidPHC):
             self._proj_handles = []
             self._load_proj_asset()
 
-        super()._create_envs()
+        super()._create_envs(build_extras=self._build_single_env)
+        self.envs, self.env_origins, self.humanoid_handles = b.envs, b.env_origins, b.humanoid_handles
+        self._root_states, self._humanoid_actor_ids = b.all_root_states, b.actor_ids
+        self._rigid_body_state = b.all_rigid_body_state
 
     def _load_marker_asset(self):
         asset_root = str(ASSET_DIR)
@@ -298,9 +296,7 @@ class HumanoidRenderEnv(HumanoidPHC):
         large_asset_options.default_dof_drive_mode = gymapi.DOF_MODE_NONE
         self._large_proj_asset = self.gym.load_asset(self.sim, asset_root, large_asset_file, large_asset_options)
 
-    def _build_single_env(self, env_id, env_ptr, humanoid_asset, dof_prop):
-        super()._build_single_env(env_id, env_ptr, humanoid_asset, dof_prop)
-
+    def _build_single_env(self, env_id, env_ptr):
         if self.viewer or self.flag_server_mode:
             self._build_marker(env_id, env_ptr)
 

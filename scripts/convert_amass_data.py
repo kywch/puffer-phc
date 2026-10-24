@@ -2,8 +2,6 @@ import glob
 import argparse
 import os.path as osp
 
-import isaacgym  # noqa
-
 import torch
 import numpy as np
 from scipy.spatial.transform import Rotation as sRot

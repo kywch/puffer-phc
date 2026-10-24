@@ -1,8 +1,6 @@
 import time
 import argparse
 
-import isaacgym  # noqa
-
 import torch
 import numpy as np
 
