@@ -1,8 +1,13 @@
 import time
 import argparse
 import functools
+
+try:
+    import isaacgym  # noqa: F401  # must be imported before torch
+except ImportError:
+    pass
+
 from puffer_phc.humanoid_phc import HumanoidPHC
-from puffer_phc.render_env import HumanoidRenderEnv
 
 import torch
 import numpy as np
@@ -37,6 +42,7 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         termination_distance=0.25,
         kp_scale=1.0,
         kd_scale=1.0,
+        backend="isaacgym",
     ):
         self.render_mode = "native"
         cfg = {
@@ -49,6 +55,7 @@ class PHCPufferEnv(pufferlib.PufferEnv):
                 "termination_distance": termination_distance,
                 "kp_scale": kp_scale,
                 "kd_scale": kd_scale,
+                "backend": backend,
             },
             "robot": {
                 "has_self_collision": has_self_collision,
@@ -58,6 +65,8 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         if headless:
             self.env = HumanoidPHC(cfg, device_type=device_type, device_id=device_id, headless=headless)
         else:
+            from puffer_phc.render_env import HumanoidRenderEnv
+
             self.env = HumanoidRenderEnv(cfg, device_type=device_type, device_id=device_id, headless=headless)
 
         self.single_observation_space = self.env.single_observation_space

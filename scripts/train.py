@@ -14,7 +14,10 @@ import joblib
 from tqdm import tqdm
 from rich_argparse import RichHelpFormatter
 
-import isaacgym  # noqa
+try:
+    import isaacgym  # noqa: F401  # must be imported before torch
+except ImportError:
+    pass
 
 import torch
 import numpy as np
@@ -641,7 +644,7 @@ if __name__ == "__main__":
     policy = make_policy(vec_env.driver_env, policy_cls, rnn_cls, args)
 
     if args["checkpoint_path"]:
-        checkpoint = torch.load(args["checkpoint_path"], map_location=device)
+        checkpoint = torch.load(args["checkpoint_path"], map_location=device, weights_only=False)
         policy.load_state_dict(checkpoint["state_dict"])
         print(f"Loaded checkpoint from {args['checkpoint_path']}")
 

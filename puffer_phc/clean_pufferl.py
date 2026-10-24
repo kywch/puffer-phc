@@ -752,7 +752,7 @@ def try_load_checkpoint(data):
         return
 
     trainer_path = os.path.join(path, "trainer_state.pt")
-    resume_state = torch.load(trainer_path)
+    resume_state = torch.load(trainer_path, weights_only=False)
     model_path = os.path.join(path, resume_state["model_name"])
     data.policy.uncompiled.load_state_dict(model_path, map_location=config.device)
     data.optimizer.load_state_dict(resume_state["optimizer_state_dict"])
