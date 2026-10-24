@@ -13,6 +13,7 @@ MUJOCO_LOG.TXT
 data/
 smpl/*.pkl
 isaacgym/
+*.motion_cache/
 
 # Python
 __pycache__/
