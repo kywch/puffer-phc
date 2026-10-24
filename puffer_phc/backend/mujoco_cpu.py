@@ -17,20 +17,9 @@ import torch
 import warp as wp
 
 from puffer_phc.backend import _newton_mujoco as nc
-from puffer_phc.backend.base import SimBackend
 
 
-class MujocoCPUBackend(SimBackend):
-    def __init__(self, device_type, device_id, headless, solver_preset="isaacgym_parity_240"):
-        super().__init__(device_type, device_id)
-        self.preset = nc.SOLVER_PRESETS[solver_preset]
-        self.headless = headless
-        self.viewer = None
-
-    def load_asset(self, asset_file):
-        self._xml, self.body_names, self.dof_props, self._drive_frame = nc.load_asset(asset_file, self.device)
-        self.num_bodies, self.num_dof = len(self.body_names), len(self.dof_props["effort"])
-
+class MujocoCPUBackend(nc.NewtonMujocoBackend):
     def create_envs(self, num_envs, env_spacing, kp_scale, kd_scale, has_self_collision, build_extras=None):
         self.num_envs = num_envs
         self.model = nc.build_model(
@@ -57,8 +46,7 @@ class MujocoCPUBackend(SimBackend):
         self._stats_sum, self._stats_max = np.zeros(3), np.zeros(2)  # (steps, niter, ncon), (niter, ncon)
         atexit.register(lambda: print(self.solver_stats()))
         self.refresh()
-        if not self.headless:  # ponytail: model is single-world (per-env solvers), so only env 0 is shown
-            self.viewer, self._render_t = nc.open_viewer(self.model), 0.0
+        self._open_viewer(self.states[0])  # ponytail: model is single-world (per-env solvers), so only env 0 is shown
 
     def refresh(self):
         views = (self._q, self._qd, self._body_q, self._body_qd)
@@ -101,9 +89,3 @@ class MujocoCPUBackend(SimBackend):
             f"MuJoCo CPU solver over {int(steps)} env-steps: iterations mean {niter / max(steps, 1):.1f} max "
             f"{int(niter_max)}, contacts mean {ncon / max(steps, 1):.1f} max {int(ncon_max)}, warnings {warnings}"
         )
-
-    def render(self):
-        nc.render(self, self.states[0])
-
-    def close(self):
-        nc.close_viewer(self)

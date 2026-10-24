@@ -29,7 +29,7 @@ def _peek_backend(argv):
         return known.backend
     p = configparser.ConfigParser()
     p.read(known.config)
-    return p.get("env", "backend", fallback="isaacgym").strip("\"'")
+    return p.get("env", "backend", fallback="mujoco_gpu").strip("\"'")
 
 
 preload_isaacgym(_peek_backend(sys.argv[1:]))
@@ -273,7 +273,7 @@ def train(args, vec_env, policy, run=None, exp_id=None, skip_resample=False, fin
 
     while data.global_step < train_config.total_timesteps:
         if not skip_resample and data.epoch > 0 and data.epoch % train_config.motion_resample_interval == 0:
-            # Evaluate the model every 600 epochs (train_config.checkpoint_interval)
+            # Evaluate the model every checkpoint_interval epochs (1500 in config.ini)
             if data.epoch % train_config.checkpoint_interval == 0:
                 eval_stats = EvalStats(vec_env, failed_save_path=os.path.join(data_dir, f"failed_{data.epoch:06d}.pkl"))
                 rollout(vec_env, policy, eval_stats)
@@ -283,7 +283,7 @@ def train(args, vec_env, policy, run=None, exp_id=None, skip_resample=False, fin
                     eval_results["0verview/epoch"] = data.epoch
                     clean_pufferl.log_dict(run, eval_results, data.global_step)
 
-            # Resample motions every 200 epochs (train_config.motion_resample_interval)
+            # Resample motions every motion_resample_interval epochs (500 in config.ini)
             vec_env.env.resample_motions()
 
             # Reset the envs and lstm hidden states
@@ -326,15 +326,6 @@ def train(args, vec_env, policy, run=None, exp_id=None, skip_resample=False, fin
             results["0verview/agent_steps"] = data.global_step
             results["0verview/epoch"] = data.epoch
             clean_pufferl.log_dict(run, results, data.global_step)
-
-    # NOTE: Not using standard eval
-    # steps_evaluated = 0
-    # steps_to_eval = int(train_config.eval_timesteps)
-    # batch_size = int(train_config.batch_size)
-    # while steps_evaluated < steps_to_eval:
-    #     stats, _ = clean_pufferl.evaluate(data)
-    #     steps_evaluated += batch_size
-    # clean_pufferl.mean_and_log(data)
 
     clean_pufferl.close(data)
 
@@ -389,8 +380,6 @@ def rollout(vec_env, policy, eval_stats=None):
 
 ### CARBS Sweeps
 def sweep_carbs(args, sweep_count=500, max_suggestion_cost=3600):
-    from math import log, ceil, floor
-
     from carbs import CARBS
     from carbs import CARBSParams
     from carbs import LinearSpace
@@ -400,10 +389,6 @@ def sweep_carbs(args, sweep_count=500, max_suggestion_cost=3600):
 
     # from carbs import ParamDictType
     from carbs import Param
-
-    def closest_power(x):
-        possible_results = floor(log(x, 2)), ceil(log(x, 2))
-        return int(2 ** min(possible_results, key=lambda z: abs(x - 2**z)))
 
     def carbs_param(
         group,
@@ -455,9 +440,6 @@ def sweep_carbs(args, sweep_count=500, max_suggestion_cost=3600):
             ),
             search_center=search_center,
         )
-
-    if not os.path.exists("checkpoints"):
-        os.system("mkdir checkpoints")
 
     target_metric = args["sweep"]["metric"]["name"].split("/")[-1]
     sweep_parameters = args["sweep"]["parameters"]
@@ -524,12 +506,6 @@ def sweep_carbs(args, sweep_count=500, max_suggestion_cost=3600):
         train_suggestion = {k.split("/")[1]: v for k, v in suggestion.items() if k.startswith("train/")}
         env_suggestion = {k.split("/")[1]: v for k, v in suggestion.items() if k.startswith("env/")}
         args["train"].update(train_suggestion)
-        # args['train']['batch_size'] = closest_power(
-        #     train_suggestion['batch_size'])
-        # args['train']['minibatch_size'] = closest_power(
-        #     train_suggestion['minibatch_size'])
-        # args['train']['bptt_horizon'] = closest_power(
-        #     train_suggestion['bptt_horizon'])
 
         args["env"].update(env_suggestion)
         args["track"] = True

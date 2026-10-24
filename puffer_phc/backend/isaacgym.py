@@ -10,7 +10,7 @@ except ImportError:
 import numpy as np
 import torch
 
-from puffer_phc.backend.base import SimBackend
+from puffer_phc.backend.base import FILTER_INTS, SimBackend
 from puffer_phc.torch_utils import torch_rand_float
 
 
@@ -163,14 +163,11 @@ class IsaacGymBackend(SimBackend):
         self.gym.set_actor_dof_properties(env_ptr, humanoid_handle, dof_prop)
 
         if has_self_collision:
-            # Per-shape self-collision filter bits (capsule model): two shapes collide iff (f_i & f_j) == 0
-            filter_ints = [0, 0, 7, 16, 12, 0, 56, 2, 33, 128, 0, 192, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  # fmt: skip
-
             props = self.gym.get_actor_rigid_shape_properties(env_ptr, humanoid_handle)
-            assert len(filter_ints) == len(props)
+            assert len(FILTER_INTS) == len(props)
 
             for p_idx in range(len(props)):
-                props[p_idx].filter = filter_ints[p_idx]
+                props[p_idx].filter = FILTER_INTS[p_idx]
             self.gym.set_actor_rigid_shape_properties(env_ptr, humanoid_handle, props)
 
         self.humanoid_handles.append(humanoid_handle)

@@ -1,5 +1,5 @@
-"""Shared by the Newton-built backends (mujoco_cpu.py, mujoco_gpu.py): model build from the gym MJCF, solver presets
-and the gym <-> Newton state conversions.
+"""Shared by the Newton-built backends (mujoco_cpu.py, mujoco_gpu.py): their base class, model build from the gym MJCF,
+solver presets and the gym <-> Newton state conversions.
 
 Gym's 3-hinge joints are PhysX spherical joints, so the humanoid is imported with ball joints and converted at this
 boundary: dof_pos = rotation vector per joint, dof_vel = child-frame relative angular velocity.
@@ -15,10 +15,9 @@ import newton
 import numpy as np
 import torch
 
+from puffer_phc.backend.base import FILTER_INTS, SimBackend
 from puffer_phc.torch_utils import exp_map_to_quat, quat_conjugate, quat_rotate, quat_to_exp_map
 
-# Gym's per-shape self-collision filter bits (humanoid_phc / isaacgym backend): shapes collide iff (f_i & f_j) == 0
-FILTER_INTS = [0, 0, 7, 16, 12, 0, 56, 2, 33, 128, 0, 192, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  # fmt: skip
 PHYSX_DT = 1 / 120  # gym's physics step: PhysX's implicit drive adds kp*PHYSX_DT damping
 MJ_SOLIMP = (0.9, 0.95, 0.001, 0.5, 2.0)  # MuJoCo default
 # gym TGS (4 position iterations) is unconverged: loaded joints act softer. kp and kd scale per body
@@ -32,32 +31,15 @@ GYM_TGS_GAIN_SCALE = {
 SOLVER_PRESETS = {
     # Eval parity for gym-trained checkpoints, not training presets. A 1/120-scale config (tc >= 1/60) makes loaded
     # feet slip 3-6x more than PhysX, hence the finer dt. See docs/physics_solver.md.
-    # Default: half the physics cost of isaacgym_parity_480, refsafe off. 0.984 success / 39.5 mm MPJPE.
+    # For eval of the provided gym checkpoint: half the cost of isaacgym_parity_480, refsafe off. 0.984 / 39.5 mm.
     "isaacgym_parity_240": dict(dt=1 / 240, substeps=4, solref=(0.005, 1.0), refsafe=False, gains=GYM_TGS_GAIN_SCALE),
     # Higher-fidelity reference, refsafe on. 0.977/0.961 success, 38.7/39.1 mm MPJPE (seeds 0/1).
     "isaacgym_parity_480": dict(dt=1 / 480, substeps=8, solref=(0.005, 1.0), refsafe=True, gains=GYM_TGS_GAIN_SCALE),
-    # Newton-native training presets (no gym gains, contact tc 1/120); see docs/newton_mujoco_physics.md.
+    # Newton-native training presets (no gym gains, contact tc 1/120): newton_120 is the config.ini default,
+    # newton_180 is higher fidelity and slower. See docs/newton_mujoco_physics.md.
     "newton_180": dict(dt=1 / 180, substeps=3, solref=(1 / 120, 1.0), refsafe=False, gains={}),  # 6 steps/control step
     "newton_120": dict(dt=1 / 120, substeps=2, solref=(1 / 120, 1.0), refsafe=False, gains={}),  # 4 steps/control step
 }
-
-
-def load_asset(asset_file, device):
-    """Returns the MJCF without its actuators, body names, gym dof_props and the PhysX drive frames [23, 3, 3]."""
-    root = ET.parse(asset_file).getroot()
-    for a in root.findall("actuator"):  # 69 motors that gym ignores; PD drives are set up in build_model
-        root.remove(a)
-    xml = ET.tostring(root, encoding="unicode")
-    mjm = mujoco.MjModel.from_xml_string(xml)  # raw 3-hinge model: names and gym's per-axis limits
-    dof_props = {
-        "lower": mjm.jnt_range[1:, 0],
-        "upper": mjm.jnt_range[1:, 1],
-        "effort": np.full(mjm.nv - 6, np.finfo(np.float32).max),  # gym: unlimited
-    }
-    # PhysX applies the drive in the child's principal-inertia frame: equilibrium rotvec = Q_j @ target_j
-    Q = np.loadtxt(os.path.join(os.path.dirname(asset_file), "smpl_humanoid_drive_frame.txt"))
-    drive_frame = torch.tensor(Q, dtype=torch.float32, device=device).view(-1, 3, 3)
-    return xml, [mjm.body(i).name for i in range(1, mjm.nbody)], dof_props, drive_frame
 
 
 def build_model(xml, body_names, preset, n_worlds, device, kp_scale, kd_scale, has_self_collision):
@@ -120,7 +102,7 @@ def gym_tensors(n, num_bodies, num_dof, device):
         rigid_body_vel=torch.zeros(n, num_bodies, 3, device=device),
         rigid_body_ang_vel=torch.zeros(n, num_bodies, 3, device=device),
         # Applied PD torque (MuJoCo child-frame ball DOFs). Gym's dof_force_tensor is not the drive torque
-        # (4-8x smaller RMS, dynamics_report.md), so a power reward from this differs; eval does not use it.
+        # (measured 4-8x smaller RMS), so a power reward from this differs; eval does not use it.
         dof_force=torch.zeros(n, num_dof, device=device),
         contact_forces=torch.zeros(n, num_bodies, 3, device=device),  # unused
     )
@@ -157,29 +139,57 @@ def gym_to_newton(drive_frame, root, dof_pos, dof_vel):
     return q, qd, pd_targets_to_newton(drive_frame, dof_pos)
 
 
-def open_viewer(model):
-    """A Newton ViewerGL on `model`; world offsets (if `model` has >1 world) are auto-computed by set_model()."""
-    from newton.viewer import ViewerGL  # heavy GL/pyglet import: only done for play mode (headless=False)
+class NewtonMujocoBackend(SimBackend):
+    """What mujoco_cpu and mujoco_gpu share: preset, asset loading and the Newton ViewerGL (play mode)."""
 
-    viewer = ViewerGL(vsync=True)  # vsync paces rendering to the display refresh; no manual sleep needed
-    viewer.set_model(model)
-    return viewer
+    def __init__(self, device_type, device_id, headless, solver_preset="isaacgym_parity_240"):
+        super().__init__(device_type, device_id)
+        self.preset = SOLVER_PRESETS[solver_preset]
+        self.headless = headless
+        self.viewer = None
 
+    def load_asset(self, asset_file):
+        """Sets the MJCF without its actuators, body names, gym dof_props and the PhysX drive frames [23, 3, 3]."""
+        root = ET.parse(asset_file).getroot()
+        for a in root.findall("actuator"):  # 69 motors that gym ignores; PD drives are set up in build_model
+            root.remove(a)
+        self._xml = ET.tostring(root, encoding="unicode")
+        mjm = mujoco.MjModel.from_xml_string(self._xml)  # raw 3-hinge model: names and gym's per-axis limits
+        self.dof_props = {
+            "lower": mjm.jnt_range[1:, 0],
+            "upper": mjm.jnt_range[1:, 1],
+            "effort": np.full(mjm.nv - 6, np.finfo(np.float32).max),  # gym: unlimited
+        }
+        # PhysX applies the drive in the child's principal-inertia frame: equilibrium rotvec = Q_j @ target_j
+        Q = np.loadtxt(os.path.join(os.path.dirname(asset_file), "smpl_humanoid_drive_frame.txt"))
+        self._drive_frame = torch.tensor(Q, dtype=torch.float32, device=self.device).view(-1, 3, 3)
+        self.body_names = [mjm.body(i).name for i in range(1, mjm.nbody)]
+        self.num_bodies, self.num_dof = len(self.body_names), len(self.dof_props["effort"])
 
-def render(backend, state):
-    """Pump one viewer frame for `state`. Exits the process once the window is closed, like the isaacgym backend."""
-    if backend.viewer is None:
-        return
-    if not backend.viewer.is_running():
-        close_viewer(backend)
-        sys.exit()
-    backend.viewer.begin_frame(backend._render_t)
-    backend.viewer.log_state(state)
-    backend.viewer.end_frame()
-    backend._render_t += backend.dt
+    def _open_viewer(self, state):
+        """A Newton ViewerGL on self.model, showing `state`, unless headless. World offsets (if self.model has >1
+        world) are auto-computed by set_model()."""
+        if self.headless:
+            return
+        from newton.viewer import ViewerGL  # heavy GL/pyglet import: only done for play mode (headless=False)
 
+        self.viewer = ViewerGL(vsync=True)  # vsync paces rendering to the display refresh; no manual sleep needed
+        self.viewer.set_model(self.model)
+        self._viewer_state, self._render_t = state, 0.0
 
-def close_viewer(backend):
-    if backend.viewer is not None:
-        backend.viewer.close()
-        backend.viewer = None
+    def render(self):
+        """Pump one viewer frame. Exits the process once the window is closed, like the isaacgym backend."""
+        if self.viewer is None:
+            return
+        if not self.viewer.is_running():
+            self.close()
+            sys.exit()
+        self.viewer.begin_frame(self._render_t)
+        self.viewer.log_state(self._viewer_state)
+        self.viewer.end_frame()
+        self._render_t += self.dt
+
+    def close(self):
+        if self.viewer is not None:
+            self.viewer.close()
+            self.viewer = None

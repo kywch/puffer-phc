@@ -14,22 +14,14 @@ import torch
 import warp as wp
 
 from puffer_phc.backend import _newton_mujoco as nc
-from puffer_phc.backend.base import SimBackend
 
 NCONMAX, NJMAX = 200, 256  # per world; observed peak 108 constraint rows (last substep only); overflow is flagged
 
 
-class MujocoGPUBackend(SimBackend):
-    def __init__(self, device_type, device_id, headless, solver_preset="isaacgym_parity_240"):
-        super().__init__(device_type, device_id)
+class MujocoGPUBackend(nc.NewtonMujocoBackend):
+    def __init__(self, device_type, *args, **kwargs):
         assert device_type == "cuda", "the mujoco_gpu backend needs device_type=cuda"
-        self.preset = nc.SOLVER_PRESETS[solver_preset]
-        self.headless = headless
-        self.viewer = None
-
-    def load_asset(self, asset_file):
-        self._xml, self.body_names, self.dof_props, self._drive_frame = nc.load_asset(asset_file, self.device)
-        self.num_bodies, self.num_dof = len(self.body_names), len(self.dof_props["effort"])
+        super().__init__(device_type, *args, **kwargs)
 
     def create_envs(self, num_envs, env_spacing, kp_scale, kd_scale, has_self_collision, build_extras=None):
         n = self.num_envs = num_envs
@@ -63,8 +55,7 @@ class MujocoGPUBackend(SimBackend):
         self._stats_steps = 0
         atexit.register(lambda: print(self.solver_stats()))
         self.refresh()
-        if not self.headless:  # one N-world model/state already covers all envs; the viewer lays worlds out itself
-            self.viewer, self._render_t = nc.open_viewer(self.model), 0.0
+        self._open_viewer(self.state)  # one N-world model/state covers all envs; the viewer lays worlds out itself
 
     def refresh(self):
         nc.write_gym(self, self._q, self._qd, self._body_q, self._body_qd, self._qfrc)
@@ -113,9 +104,3 @@ class MujocoGPUBackend(SimBackend):
             f"mean {niter / steps:.1f} max {int(niter_max)}, constraint rows mean {nefc / steps:.1f} max "
             f"{int(nefc_max)} (njmax {NJMAX}), overflow {overflow!r}"
         )
-
-    def render(self):
-        nc.render(self, self.state)
-
-    def close(self):
-        nc.close_viewer(self)

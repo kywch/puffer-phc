@@ -38,25 +38,18 @@ The default path trains on the Newton/MuJoCo backends (Python 3.12, no Isaac Gym
 
 3. Download the SMPL parameters from [SMPL](https://smpl.is.tue.mpg.de/), and unzip them into `smpl` folder. Rename the files `basicmodel_neutral_lbs_10_207_0_v1.1.0`, `basicmodel_m_lbs_10_207_0_v1.1.0.pkl`, `basicmodel_f_lbs_10_207_0_v1.1.0.pkl` to `SMPL_NEUTRAL.pkl`, `SMPL_MALE.pkl` and `SMPL_FEMALE.pkl`.
 
-    The `default` environment's Python 3.12 can't load `chumpy`, so re-save the SMPL `.pkl` files with their chumpy arrays converted to numpy (only `shapedirs` is affected) before using the `default` env. In the `isaacgym` environment (which still has `chumpy`), for each of the three files:
-    ```python
-    import pickle
-    import numpy as np
-
-    path = "smpl/SMPL_NEUTRAL.pkl"  # and SMPL_MALE.pkl, SMPL_FEMALE.pkl
-    with open(path, "rb") as f:
-        data = pickle.load(f, encoding="latin1")
-    data["shapedirs"] = np.array(data["shapedirs"])
-    with open(path, "wb") as f:
-        pickle.dump(data, f)
+    The `default` environment's Python 3.12 can't load `chumpy`, so convert the SMPL files' chumpy arrays to numpy once. chumpy needs Python <= 3.10:
     ```
+    uv run smpl/strip_chumpy.py
+    ```
+    Alternatively, run `pixi run -e isaacgym python smpl/strip_chumpy.py` in the `isaacgym` environment, which has `chumpy`.
 
 4. Train a policy. `config.ini` defaults to `backend = mujoco_gpu` and `solver_preset = newton_120`:
     ```
     python scripts/train.py --config config.ini -m <MOTION FILE PATH>
     ```
 
-    `--env.solver-preset` (mujoco backends only) selects the physics preset: `newton_180` (primary) or `newton_120` (fastest) for Newton-native training; `isaacgym_parity_240` or `isaacgym_parity_480` for evaluating checkpoints trained on Isaac Gym — these two are eval-only, not meant for training. See `docs/newton_mujoco_physics.md` and `docs/physics_solver.md` for details.
+    `--env.solver-preset` (mujoco backends only) selects the physics preset: `newton_120` (the default) or `newton_180` (higher fidelity, slower) for Newton-native training; `isaacgym_parity_240` (or the higher-fidelity, ~2x slower `isaacgym_parity_480`) for evaluating checkpoints trained on Isaac Gym — these two are eval-only, not meant for training. See `docs/newton_mujoco_physics.md` and `docs/physics_solver.md` for details.
 
     MuJoCo training presets are new; Isaac Gym is the validated training path so far (see `docs/newton_mujoco_physics.md`).
 
@@ -142,7 +135,7 @@ Isaac Gym (Python 3.8, pytorch 2.3.1/CUDA 12.1, Isaac Gym 1.0rc4) is kept as a l
 
 # Notes
 * `python scripts/train.py --help` shows the full list of options for the environment and training, which allows you to override the defaults in the config file.
-* I tested the [style discriminator](https://arxiv.org/abs/2104.02180) in the original PHC repo and here, saw that it did not improve the imitation performance, so turned it off in the config. To enable it, set `use_amp_obs` to True in the config, or add `--use-amp-obs True` to the command.
+* I tested the [style discriminator](https://arxiv.org/abs/2104.02180) in the original PHC repo and here, saw that it did not improve the imitation performance, so it is optional and off by default. To enable it, set `use_amp_obs = True` in the config, or add `--env.use-amp-obs True` to the command.
 * I saw several times that "fine-tuning" pretrained weights with `-c <CHECKPOINT PATH>` resulted in much faster learning. The [L2 init reg loss](https://arxiv.org/abs/2308.11958) is being logged in the training dashboard, and you can see greater L2 distance when learning from scratch compared to fine-tuning.
 * As mentioned in the [PHC paper](https://arxiv.org/abs/2305.06456), I saw that the 6-layer MLP perform better than shallow MLPs, and SiLU activations perform better than ReLUs.
 * Adding LayerNorm before the last layer tamed the gradient norm, and I [swept the hyperparameters](https://wandb.ai/kywch/carbs/sweeps/fupc0sps?nw=nwuserkywch) with the max grad norm of 10 (the original PHC repo uses 50). 

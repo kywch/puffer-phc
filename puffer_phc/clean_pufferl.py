@@ -740,21 +740,6 @@ def save_checkpoint(data):
     return model_path
 
 
-def try_load_checkpoint(data):
-    config = data.config
-    path = os.path.join(config.data_dir, config.exp_id)
-    if not os.path.exists(path):
-        print("No checkpoints found. Assuming new experiment")
-        return
-
-    trainer_path = os.path.join(path, "trainer_state.pt")
-    resume_state = torch.load(trainer_path, weights_only=False)
-    model_path = os.path.join(path, resume_state["model_name"])
-    data.policy.uncompiled.load_state_dict(model_path, map_location=config.device)
-    data.optimizer.load_state_dict(resume_state["optimizer_state_dict"])
-    print(f'Loaded checkpoint {resume_state["model_name"]}')
-
-
 def count_params(policy):
     return sum(p.numel() for p in policy.parameters() if p.requires_grad)
 
