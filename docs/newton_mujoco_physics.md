@@ -7,21 +7,21 @@ Isaac Gym: no gym TGS gain scales and no gym-matched contact stiffness. For the 
 All numbers below come from one RTX 3090, mujoco 3.15.0, mujoco-warp 3.15.0 and newton 1.7.0. The scripts and raw
 results are in `tmp/newton_gpu/compare/`, which is local only (`REPORT.md` and `table.md` there).
 
-## Ball-joint PD error wrap (fixed in mujoco_gpu.py)
+## Ball-joint PD error wrap (now native in mujoco-warp >= 3.16)
 
-MuJoCo C (>= 3.11) servos a ball-joint position actuator toward the setpoint nearest the current angle: it wraps
-`ctrl - length` per axis to [-pi, pi]. mujoco-warp only does so from 3.16; newton 1.7.0 pins mujoco-warp 3.15. Newton
-turns each target quaternion into a rotation vector with |angle| <= pi, so when a target crosses |angle| = pi,
-mujoco-warp 3.15 applies close to a full 2*pi torque the wrong way (R_Knee: ctrl +2.72 -> -2.77 at length 1.63;
-MuJoCo C +443 Nm, mujoco-warp -3578 Nm). On the gym checkpoint this failed `50020/50021 running_on_spot` in 6 of 7
-GPU evals. `mujoco_gpu.py` now wraps `ctrl` against the current joint angle before every mujoco-warp step, as MuJoCo
-C does.
+MuJoCo C (>= 3.11) servos a ball-joint position actuator toward the setpoint nearest the current angle, wrapping
+`ctrl - length` per axis to [-pi, pi]; mujoco-warp lacked this before 3.16, so a target crossing |angle| = pi drove
+the joint with close to a full 2*pi torque the wrong way (R_Knee: ctrl +2.72 -> -2.77 at length 1.63; MuJoCo C +443
+Nm, mujoco-warp -3578 Nm), failing `50020/50021 running_on_spot` in 6 of 7 GPU evals, which `mujoco_gpu.py` worked
+around with a per-step wrap kernel (commit 441869a, since reverted). mujoco-warp >= 3.16 wraps natively, so
+`pyproject.toml` now pins `newton` to the main-branch commit `7edb1bb3802375ff6a2a293cda6c3f0f246febe5` that bundles
+it (re-pin to the 1.8.0 release when it ships).
 
 Every GPU number in sections 1-3, except the `newton_180` replay paragraph, was measured with an earlier scratch
-version of this fix (`knobs.py: wrapfix`), which wrapped against the previous substep's `actuator_length`. With the
-shipped fix, `isaacgym_parity_240` on GPU scores 0.977 / 0.953 success and 39.4 / 40.8 mm MPJPE (seeds 0/1);
-`running_on_spot` 50021 no longer fails, and the failed motions are mostly ones that also fail on CPU
-(`one_leg_jump`, `running_on_spot` 50009/50020).
+version of that workaround (`knobs.py: wrapfix`), which wrapped against the previous substep's `actuator_length`.
+With the final (now-removed) `mujoco_gpu.py` workaround, `isaacgym_parity_240` on GPU scored 0.977 / 0.953 success
+and 39.4 / 40.8 mm MPJPE (seeds 0/1); `running_on_spot` 50021 no longer failed, and the failed motions were mostly
+ones that also fail on CPU (`one_leg_jump`, `running_on_spot` 50009/50020).
 
 ## 1. Candidate settings
 

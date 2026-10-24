@@ -1,6 +1,6 @@
 # puffer_phc
 
-PHC (Perpetual Humanoid Control) motion imitation trained with PufferLib on Isaac Gym. Training uses Isaac Gym (Python 3.8, `default` pixi env); MuJoCo CPU and GPU eval backends run in the `newton` pixi env (Python 3.12, newton 1.7 / mujoco 3.15, torch 2.12+cu130).
+PHC (Perpetual Humanoid Control) motion imitation trained with PufferLib on Isaac Gym. Training uses Isaac Gym (Python 3.8, `default` pixi env); MuJoCo CPU and GPU eval backends run in the `newton` pixi env (Python 3.12, newton main-branch pin / mujoco-warp 3.16, torch 2.12+cu130).
 
 ## Where it runs
 
@@ -87,7 +87,7 @@ The training dashboard is a rich live table. When stdout is redirected, the log 
 - Code in `puffer_phc/backend/` (`base.py` docstring is the interface contract: tensor layouts and conventions).
 - `mujoco_cpu` (MuJoCo C, one solver per env) and `mujoco_gpu` (mujoco-warp, one batched solver, CUDA graph per `simulate()`) share the model build, presets and gym conversions in `backend/_newton_mujoco.py`. Both convert gym's per-joint rotation-vector dof_pos and map PD targets through the measured PhysX drive frame (`puffer_phc/assets/smpl_humanoid_drive_frame.txt`).
 - Their eval-parity physics is a `[env] solver_preset` (`--env.solver-preset`): `isaacgym_parity_240` (default, 8 x 1/240 s per control step, refsafe off) or `isaacgym_parity_480` (16 x 1/480 s, refsafe on, higher fidelity, ~2x the cost). Both use near-rigid contacts (solref 0.005) and per-body kp/kd gain scales (ankle/toe 0.2, hip/knee 0.8, torso/spine/chest 0.5) to emulate Isaac Gym's unconverged TGS solver. See `docs/physics_solver.md` for the settings and why.
-- Eval of `ckpt_amass_800m_acc97.pt` on mujoco_cpu (default `isaacgym_parity_240` preset): success 0.984, MPJPE 39.5 mm (vs gym's 0.992 / 37.4; remaining gap is physics, not a bug; eval has ±0.02 success run-to-run noise, see docs/physics_solver.md). On mujoco_gpu: 0.977 / 0.953, 39.4 / 40.8 mm (seeds 0/1; float32, solver tolerance 1e-6 vs 1e-8 on CPU; `mujoco_gpu.py` wraps ball-joint PD errors across pi as MuJoCo C does, which mujoco-warp < 3.16 does not), ~40 s wall vs ~3.5 min; raw ~55k env-steps/s at 4096 envs on an RTX 3090.
+- Eval of `ckpt_amass_800m_acc97.pt` on mujoco_cpu (default `isaacgym_parity_240` preset): success 0.984, MPJPE 39.5 mm (vs gym's 0.992 / 37.4; remaining gap is physics, not a bug; eval has ±0.02 success run-to-run noise, see docs/physics_solver.md). On mujoco_gpu: 0.977 / 0.953, 39.4 / 40.8 mm (seeds 0/1; float32, solver tolerance 1e-6 vs 1e-8 on CPU; mujoco-warp >= 3.16 wraps ball-joint PD errors across pi natively, matching MuJoCo C), ~40 s wall vs ~3.5 min; raw ~55k env-steps/s at 4096 envs on an RTX 3090.
 - Inspect solver state via `backend.solvers[i].mj_model` / `.mj_data` (mujoco_cpu) or `backend.solver.mjw_model` / `.mjw_data` (mujoco_gpu, batched).
 - Newton-native training presets (no gym gain scales, contact tc 1/120): `newton_180` (6 x 1/180 s per control step) and `newton_120` (4 x 1/120 s, faster). See `docs/newton_mujoco_physics.md`.
 

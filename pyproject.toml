@@ -71,7 +71,8 @@ python = "3.12.*"
 
 [tool.pixi.feature.newton.pypi-dependencies]
 torch = { version = "==2.12.0", index = "https://download.pytorch.org/whl/cu130" }
-newton = { version = "==1.7.0", extras = ["sim"] }
+# main-branch pin: mujoco-warp 3.16 wraps ball-joint actuator setpoints natively. Re-pin to the 1.8.0 release when it ships.
+newton = { git = "https://github.com/newton-physics/newton", rev = "7edb1bb3802375ff6a2a293cda6c3f0f246febe5", extras = ["sim"] }
 # ViewerGL (live rendering, `--mode play`) needs newton's "examples" pins without the heavy, often-unbuildable
 # open3d/trimesh deps that extra also pulls in.
 pyglet = ">=2.1.6,<3"

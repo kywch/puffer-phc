@@ -12,26 +12,11 @@ import newton
 import numpy as np
 import torch
 import warp as wp
-from mujoco_warp._src.math import quat_to_vel
 
 from puffer_phc.backend import _newton_mujoco as nc
 from puffer_phc.backend.base import SimBackend
 
 NCONMAX, NJMAX = 200, 800  # per world; a humanoid lying flat has ~60-100 contacts, 4 rows each (pyramidal condim 3)
-
-
-@wp.kernel
-def _wrap_ball_ctrl(qpos: wp.array2d(dtype=float), ctrl: wp.array2d(dtype=float)):
-    """MuJoCo C (>= 3.11) servos a ball joint toward the setpoint nearest its current angle: ctrl - length is wrapped to
-    [-pi, pi] per axis. mujoco-warp < 3.16 doesn't, so a target crossing |angle| = pi drives the joint the long way
-    round. Wraps ctrl against actuator_length from qpos as mujoco-warp's transmission computes it. Layout: free joint,
-    then 23 ball joints with 3 position actuators each (build_model)."""
-    w, j = wp.tid()
-    a = 7 + 4 * j
-    length = quat_to_vel(wp.normalize(wp.quat(qpos[w, a], qpos[w, a + 1], qpos[w, a + 2], qpos[w, a + 3])))
-    for i in range(3):
-        err = ctrl[w, 3 * j + i] - length[i]
-        ctrl[w, 3 * j + i] -= 2.0 * wp.pi * wp.round(err / (2.0 * wp.pi))
 
 
 class MujocoGPUBackend(SimBackend):
@@ -59,18 +44,10 @@ class MujocoGPUBackend(SimBackend):
             self.model, solver="newton", integrator="implicitfast", cone="pyramidal", nconmax=NCONMAX, njmax=NJMAX
         )
         nc.apply_refsafe(self.preset, [self.solver.mj_model.opt, self.solver.mjw_model.opt])  # before graph capture
-        # ponytail: hooks Newton's private _mujoco_warp_step (runs after ctrl and qpos are written); drop once newton
-        # allows mujoco-warp >= 3.16, which wraps natively.
-        mjw_step, d = self.solver._mujoco_warp_step, self.solver.mjw_data
-
-        def wrapped_step():
-            wp.launch(_wrap_ball_ctrl, dim=(n, self.num_dof // 3), inputs=[d.qpos, d.ctrl])
-            mjw_step()
-
-        self.solver._mujoco_warp_step = wrapped_step
         self.state, self.control = s, c = self.model.state(), self.model.control()
         views = [wp.to_torch(a) for a in (s.joint_q, s.joint_qd, s.body_q, s.body_qd, c.joint_target_q)]
         self._q, self._qd, self._body_q, self._body_qd, self._target = (v.view(n, -1, *v.shape[1:]) for v in views)
+        d = self.solver.mjw_data
         self._qfrc, self._warmstart, self._niter, self._nefc = map(
             wp.to_torch, (d.qfrc_actuator, d.qacc_warmstart, d.solver_niter, d.nefc)
         )
