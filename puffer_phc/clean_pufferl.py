@@ -109,26 +109,21 @@ def evaluate(data):
     while not experience.full:
         with profile.env:
             o, r, d, t, info, env_id, mask = data.vecenv.recv()
-            env_id = env_id.tolist()
 
         with profile.eval_misc:
-            if isinstance(mask, torch.Tensor):
-                data.global_step += mask.sum().item()
-            else:
-                data.global_step += sum(mask)
+            idx = torch.where(torch.as_tensor(mask, device=config.device))[0]  # the rollout loop's one host sync
+            data.global_step += len(idx)
 
-            o = torch.as_tensor(o)
-            o_device = o.to(config.device)
-            r = torch.as_tensor(r)
-            d = torch.as_tensor(d)
-            t = torch.as_tensor(t)
+            o_device = torch.as_tensor(o, device=config.device)
+            r = torch.as_tensor(r, device=config.device)
+            d = torch.as_tensor(d, device=config.device)
 
-        with profile.eval_forward, torch.no_grad():
+        with profile.eval_forward, torch.no_grad(), torch.autocast("cuda", torch.bfloat16, enabled=config.bf16):
             # TODO: In place-update should be faster. Leaking 7% speed max
             # Also should be using a cuda tensor to index
             if lstm_h is not None:
                 # Reset the hidden states for the done/truncated envs
-                reset_envs = torch.logical_or(d, t)
+                reset_envs = torch.logical_or(d, torch.as_tensor(t, device=config.device))
                 if reset_envs.any():
                     lstm_h[:, reset_envs] = 0
                     lstm_c[:, reset_envs] = 0
@@ -136,18 +131,14 @@ def evaluate(data):
                 h = lstm_h[:, env_id]
                 c = lstm_c[:, env_id]
                 actions, logprob, _, value, (h, c) = policy(o_device, (h, c))
-                lstm_h[:, env_id] = h
-                lstm_c[:, env_id] = c
+                lstm_h[:, env_id] = h.float()  # bf16 under autocast
+                lstm_c[:, env_id] = c.float()
             else:
                 actions, logprob, _, value = policy(o_device)
 
         with profile.eval_misc:
-            value = value.flatten()
-            mask = torch.as_tensor(mask)  # * policy.mask)
-            o = o if config.cpu_offload else o_device
-
             amp_obs = data.vecenv.amp_obs if data.use_amp_obs else None
-            experience.store(o, amp_obs, value, actions, logprob, r, d, t, env_id, mask)
+            experience.store(o_device, amp_obs, value.flatten(), actions, logprob, r, d, env_id, idx)
 
             for i in info:
                 for k, v in pufferlib.utils.unroll_nested_dict(i):
@@ -173,7 +164,6 @@ def evaluate(data):
 
     # TODO: Better way to enable multiple collects
     data.experience.ptr = 0
-    data.experience.step = 0
     return data.stats, infos
 
 
@@ -185,10 +175,9 @@ def train(data):
 
     with profile.train_misc:
         idxs = experience.sort_training_data()
-        dones_np = experience.dones_np[idxs]
-        # trunc_np = experience.truncateds_np[idxs]
-        values_np = experience.values_np[idxs]
-        rewards_np = experience.rewards_np[idxs]
+        dones_np, values_np, rewards_np = (
+            x[idxs].cpu().numpy() for x in (experience.dones, experience.values, experience.rewards)
+        )
         experience.flatten_batch()
 
         if data.use_amp_obs:
@@ -228,7 +217,6 @@ def train(data):
         .transpose(0, 1)
         .reshape(experience.num_minibatches, experience.minibatch_size)
     )
-    experience.returns_np = advantages_np + experience.values_np
     experience.b_returns = experience.b_advantages + experience.b_values
 
     # Optimizing the policy and value network
@@ -254,7 +242,7 @@ def train(data):
                         ]
                     )
 
-            with profile.train_forward:
+            with profile.train_forward, torch.autocast("cuda", torch.bfloat16, enabled=config.bf16):
                 if experience.lstm_h is not None:
                     _, newlogprob, entropy, newvalue, lstm_state = data.policy(obs, state=lstm_state, action=atn)
                     lstm_state = (lstm_state[0].detach(), lstm_state[1].detach())
@@ -263,9 +251,6 @@ def train(data):
                         obs.reshape(-1, *data.vecenv.single_observation_space.shape),
                         action=atn,
                     )
-
-                if config.device == "cuda":
-                    torch.cuda.synchronize()
 
             with profile.train_misc:
                 logratio = newlogprob - log_probs.reshape(-1)
@@ -333,40 +318,26 @@ def train(data):
                 data.optimizer.zero_grad()
                 loss.backward()
 
-                before_clip_grad_norm = 0
-                for p in data.policy.parameters():
-                    if p.grad is not None:
-                        before_clip_grad_norm += p.grad.norm().item()
-
-                torch.nn.utils.clip_grad_norm_(data.policy.parameters(), config.max_grad_norm)
-
-                # after_clip_grad_norm = 0
-                # for p in data.policy.parameters():
-                #     if p.grad is not None:
-                #         after_clip_grad_norm += p.grad.norm().item()
-
+                grad_norm = torch.nn.utils.clip_grad_norm_(data.policy.parameters(), config.max_grad_norm)
                 data.optimizer.step()
-                if config.device == "cuda":
-                    torch.cuda.synchronize()
 
-            with profile.train_misc:
-                losses.policy_loss += pg_loss.item() / total_minibatches
-                losses.value_loss += v_loss.item() / total_minibatches
-                losses.entropy += entropy_loss.item() / total_minibatches
-                losses.old_approx_kl += old_approx_kl.item() / total_minibatches
-                losses.approx_kl += approx_kl.item() / total_minibatches
-                losses.clipfrac += clipfrac.item() / total_minibatches
-                losses.before_clip_grad_norm += before_clip_grad_norm / total_minibatches
-                # losses.after_clip_grad_norm += after_clip_grad_norm / total_minibatches
-                losses.l2_init_reg_loss += l2_init_reg_loss.item() / total_minibatches
+            with profile.train_misc, torch.no_grad():  # accumulate on the GPU; read once after the update
+                losses.policy_loss += pg_loss / total_minibatches
+                losses.value_loss += v_loss / total_minibatches
+                losses.entropy += entropy_loss / total_minibatches
+                losses.old_approx_kl += old_approx_kl / total_minibatches
+                losses.approx_kl += approx_kl / total_minibatches
+                losses.clipfrac += clipfrac / total_minibatches
+                losses.before_clip_grad_norm += grad_norm / total_minibatches
+                losses.l2_init_reg_loss += l2_init_reg_loss / total_minibatches
 
                 if data.use_amp_obs:
-                    losses.disc_loss += disc_loss.item() / total_minibatches
+                    losses.disc_loss += disc_loss / total_minibatches
                     losses.disc_agent_acc += (disc_agent_logits < 0).float().mean() / total_minibatches
                     losses.disc_demo_acc += (disc_demo_logits > 0).float().mean() / total_minibatches
 
-                if mean_bound_loss:
-                    losses.mean_bound_loss += mean_bound_loss.item() / total_minibatches
+                if mean_bound_loss is not None:
+                    losses.mean_bound_loss += mean_bound_loss / total_minibatches
 
         if config.target_kl is not None:
             if approx_kl > config.target_kl:
@@ -378,11 +349,10 @@ def train(data):
             lrnow = frac * config.learning_rate
             data.optimizer.param_groups[0]["lr"] = lrnow
 
-        y_pred = experience.values_np
-        y_true = experience.returns_np
-        var_y = np.var(y_true)
-        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
-        losses.explained_variance = explained_var
+        for k, v in list(losses.items()):
+            setattr(losses, k, float(v))
+        var_y = np.var(advantages_np + values_np)
+        losses.explained_variance = np.nan if var_y == 0 else 1 - np.var(advantages_np) / var_y
         data.epoch += 1
 
         done_training = data.global_step >= config.total_timesteps
@@ -556,20 +526,12 @@ class Experience:
             batch_size, *obs_shape, dtype=obs_dtype, pin_memory=pin, device=device if not pin else "cpu"
         )
 
-        self.actions = torch.zeros(batch_size, *atn_shape, dtype=atn_dtype, pin_memory=pin)
-        self.logprobs = torch.zeros(batch_size, pin_memory=pin)
-        self.rewards = torch.zeros(batch_size, pin_memory=pin)
-        self.dones = torch.zeros(batch_size, pin_memory=pin)
-        self.truncateds = torch.zeros(batch_size, pin_memory=pin)
-        self.values = torch.zeros(batch_size, pin_memory=pin)
-
-        # self.obs_np = np.asarray(self.obs)
-        self.actions_np = np.asarray(self.actions)
-        self.logprobs_np = np.asarray(self.logprobs)
-        self.rewards_np = np.asarray(self.rewards)
-        self.dones_np = np.asarray(self.dones)
-        self.truncateds_np = np.asarray(self.truncateds)
-        self.values_np = np.asarray(self.values)
+        self.actions = torch.zeros(batch_size, *atn_shape, dtype=atn_dtype, device=device)
+        self.logprobs = torch.zeros(batch_size, device=device)
+        self.rewards = torch.zeros(batch_size, device=device)
+        self.dones = torch.zeros(batch_size, device=device)
+        self.values = torch.zeros(batch_size, device=device)
+        self.env_ids = torch.zeros(batch_size, dtype=torch.long, device=device)
 
         self.lstm_h = self.lstm_c = None
         if lstm is not None:
@@ -592,9 +554,7 @@ class Experience:
         self.bptt_horizon = bptt_horizon
         self.minibatch_size = minibatch_size
         self.device = device
-        self.sort_keys = []
         self.ptr = 0
-        self.step = 0
 
         self.use_amp_obs = use_amp_obs
         if self.use_amp_obs:
@@ -616,53 +576,38 @@ class Experience:
     def full(self):
         return self.ptr >= self.batch_size
 
-    def store(self, obs, amp_obs, value, action, logprob, reward, done, trunc, env_id, mask):
-        # Mask learner and Ensure indices do not exceed batch size
+    def store(self, obs, amp_obs, value, action, logprob, reward, done, env_id, idx):
+        """idx: device indices of the rows to store (mask-selected); capped at the batch size"""
         ptr = self.ptr
-        indices = torch.where(mask)[0].numpy()[: self.batch_size - ptr]
+        indices = idx[: self.batch_size - ptr]
         end = ptr + len(indices)
 
-        self.obs[ptr:end] = obs.to(self.obs.device)[indices]
+        self.obs[ptr:end] = obs[indices]
         if self.use_amp_obs:
-            self.amp_obs[ptr:end] = amp_obs.to(self.amp_obs.device)[indices]
+            self.amp_obs[ptr:end] = amp_obs[indices]
 
-        self.values_np[ptr:end] = value.cpu().numpy()[indices]
-        self.actions_np[ptr:end] = action.cpu().numpy()[indices]
-        self.logprobs_np[ptr:end] = logprob.cpu().numpy()[indices]
-        self.rewards_np[ptr:end] = reward.cpu().numpy()[indices]
-        self.dones_np[ptr:end] = done.cpu().numpy()[indices]
-        self.truncateds_np[ptr:end] = trunc.cpu().numpy()[indices]
-        self.sort_keys.extend([(env_id[i], self.step) for i in indices])
+        self.values[ptr:end] = value[indices]
+        self.actions[ptr:end] = action[indices]
+        self.logprobs[ptr:end] = logprob[indices]
+        self.rewards[ptr:end] = reward[indices]
+        self.dones[ptr:end] = done[indices]
+        self.env_ids[ptr:end] = torch.as_tensor(env_id, device=self.device)[indices]
         self.ptr = end
-        self.step += 1
 
     def sort_training_data(self):
-        idxs = np.asarray(sorted(range(len(self.sort_keys)), key=self.sort_keys.__getitem__))
-        self.b_idxs_obs = (
-            torch.as_tensor(
-                idxs.reshape(self.minibatch_rows, self.num_minibatches, self.bptt_horizon).transpose(1, 0, -1)
-            )
-            .to(self.obs.device)
-            .long()
-        )
-        self.b_idxs = self.b_idxs_obs.to(self.device)
+        # Rows are stored in step order, so a stable sort by env id orders each env's rows by step
+        idxs = torch.argsort(self.env_ids, stable=True)
+        self.b_idxs = idxs.reshape(self.minibatch_rows, self.num_minibatches, self.bptt_horizon).transpose(0, 1)
+        self.b_idxs_obs = self.b_idxs.to(self.obs.device)
         self.b_idxs_flat = self.b_idxs.reshape(self.num_minibatches, self.minibatch_size)
-        self.sort_keys = []
         return idxs
 
     def flatten_batch(self):
         b_idxs, b_flat = self.b_idxs, self.b_idxs_flat
-        self.b_actions = self.actions.to(self.device, non_blocking=True)
-        self.b_logprobs = self.logprobs.to(self.device, non_blocking=True)
-        self.b_dones = self.dones.to(self.device, non_blocking=True)
-        self.b_truncated = self.truncateds.to(self.device, non_blocking=True)
-        self.b_values = self.values.to(self.device, non_blocking=True)
         self.b_obs = self.obs[self.b_idxs_obs]
-        self.b_actions = self.b_actions[b_idxs].contiguous()
-        self.b_logprobs = self.b_logprobs[b_idxs]
-        self.b_dones = self.b_dones[b_idxs]
-        self.b_truncated = self.b_truncated[b_idxs]
-        self.b_values = self.b_values[b_flat]
+        self.b_actions = self.actions[b_idxs].contiguous()
+        self.b_logprobs = self.logprobs[b_idxs]
+        self.b_values = self.values[b_flat]
 
         # AMP, only used for discriminator training
         if self.use_amp_obs:

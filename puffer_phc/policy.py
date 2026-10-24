@@ -5,6 +5,13 @@ from pufferlib.pytorch import layer_init
 import pufferlib.models
 
 
+def fp32(head, x):
+    """Run a mu/value head in fp32 under bf16 autocast: bf16 rounding of its output would swamp the PPO ratio
+    (clip_coef 0.01) and the value loss"""
+    with torch.autocast("cuda", enabled=False):
+        return head(x.float())
+
+
 class Recurrent(pufferlib.models.LSTMWrapper):
     def __init__(self, env, policy, input_size=512, hidden_size=512, num_layers=1):
         super().__init__(env, policy, input_size, hidden_size, num_layers)
@@ -167,7 +174,7 @@ class PHCPolicy(PolicyWithDiscriminator):
         return self.actor_mlp(self.obs_pointer), None
 
     def decode_actions(self, hidden, lookup=None):
-        mu = self.mu(hidden)
+        mu = fp32(self.mu, hidden)
         std = torch.exp(self.sigma).expand_as(mu)
 
         if self._deterministic_action is True:
@@ -180,7 +187,7 @@ class PHCPolicy(PolicyWithDiscriminator):
             self.mean_bound_loss = self.bound_loss(mu)
 
         # NOTE: Separate critic network takes input directly
-        value = self.critic_mlp(self.obs_pointer)
+        value = fp32(self.critic_mlp[-1], self.critic_mlp[:-1](self.obs_pointer))
         return probs, value
 
 
@@ -230,7 +237,7 @@ class LSTMCriticPolicy(PolicyWithDiscriminator):
         return self.critic_mlp(self.obs_pointer), None
 
     def decode_actions(self, hidden, lookup=None):
-        mu = self.actor_mlp(self.obs_pointer)
+        mu = fp32(self.actor_mlp[-1], self.actor_mlp[:-1](self.obs_pointer))
         std = torch.exp(self.sigma).expand_as(mu)
 
         if self._deterministic_action is True:
@@ -245,7 +252,7 @@ class LSTMCriticPolicy(PolicyWithDiscriminator):
             self.mean_bound_loss = self.bound_loss(mu)
 
         # NOTE: hidden from LSTM goes to the critic head
-        value = self.value(hidden)
+        value = fp32(self.value, hidden)
         return probs, value
 
 
@@ -291,7 +298,7 @@ class LSTMActorPolicy(PolicyWithDiscriminator):
         return self.actor_mlp(self.obs_pointer), None
 
     def decode_actions(self, hidden, lookup=None):
-        mu = self.mu(hidden)
+        mu = fp32(self.mu, hidden)
         std = torch.exp(self.sigma).expand_as(mu)
 
         if self._deterministic_action is True:
@@ -306,7 +313,7 @@ class LSTMActorPolicy(PolicyWithDiscriminator):
             self.mean_bound_loss = self.bound_loss(mu)
 
         # NOTE: Separate critic network takes input directly
-        value = self.critic_mlp(self.obs_pointer)
+        value = fp32(self.critic_mlp[-1], self.critic_mlp[:-1](self.obs_pointer))
         return probs, value
 
 
