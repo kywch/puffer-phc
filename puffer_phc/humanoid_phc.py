@@ -42,7 +42,7 @@ class HumanoidPHC:
     ):
         backend_name = cfg["env"].get("backend", "isaacgym")
         backend_kwargs = dict(device_type=device_type, device_id=device_id, headless=headless)
-        if backend_name == "mujoco_cpu" and "solver_preset" in cfg["env"]:
+        if backend_name in ("mujoco_cpu", "mujoco_gpu") and "solver_preset" in cfg["env"]:
             backend_kwargs["solver_preset"] = cfg["env"]["solver_preset"]
         self.backend = make_backend(backend_name, **backend_kwargs)
         self.device = self.backend.device

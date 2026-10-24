@@ -12,6 +12,8 @@ def make_backend(name, **kwargs):
         from puffer_phc.backend.isaacgym import IsaacGymBackend as Backend
     elif name == "mujoco_cpu":
         from puffer_phc.backend.mujoco_cpu import MujocoCPUBackend as Backend
+    elif name == "mujoco_gpu":
+        from puffer_phc.backend.mujoco_gpu import MujocoGPUBackend as Backend
     else:
         raise ValueError(f"Unknown backend: {name}")
     return Backend(**kwargs)

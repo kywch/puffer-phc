@@ -1,6 +1,6 @@
 # puffer_phc
 
-PHC (Perpetual Humanoid Control) motion imitation trained with PufferLib on Isaac Gym. Training uses Isaac Gym (Python 3.8, `default` pixi env); a MuJoCo-CPU eval backend runs in the `newton` pixi env (Python 3.12, newton 1.7 / mujoco 3.15, torch 2.12+cu130).
+PHC (Perpetual Humanoid Control) motion imitation trained with PufferLib on Isaac Gym. Training uses Isaac Gym (Python 3.8, `default` pixi env); MuJoCo CPU and GPU eval backends run in the `newton` pixi env (Python 3.12, newton 1.7 / mujoco 3.15, torch 2.12+cu130).
 
 ## Where it runs
 
@@ -67,6 +67,9 @@ pixi run python scripts/train.py --mode eval -c ckpt_amass_800m_acc97.pt -m data
 # isaacgym_parity_240 preset, ~6 min with isaacgym_parity_480)
 pixi run -e newton python scripts/train.py --mode eval -c ckpt_amass_800m_acc97.pt -m data/amass_train_take6_upright.pkl --env.backend mujoco_cpu --env.num-envs 129
 
+# Same eval on the GPU (mujoco-warp, all envs batched in one solver; ~40 s)
+pixi run -e newton python scripts/train.py --mode eval -c ckpt_amass_800m_acc97.pt -m data/amass_train_take6_upright.pkl --env.backend mujoco_gpu --env.num-envs 129
+
 # Tests (both envs define `test`, so -e is required)
 pixi run -e default test
 pixi run -e newton test
@@ -80,12 +83,12 @@ The training dashboard is a rich live table. When stdout is redirected, the log 
 
 ## Sim backends
 
-- `[env] backend` in `config.ini` selects `isaacgym` (default) or `mujoco_cpu`.
+- `[env] backend` in `config.ini` selects `isaacgym` (default), `mujoco_cpu` or `mujoco_gpu`.
 - Code in `puffer_phc/backend/` (`base.py` docstring is the interface contract: tensor layouts and conventions).
-- `mujoco_cpu` converts gym's per-joint rotation-vector dof_pos, maps PD targets through the measured PhysX drive frame (`puffer_phc/assets/smpl_humanoid_drive_frame.txt`).
-- `mujoco_cpu` eval-parity physics is a `[env] solver_preset` (`--env.solver-preset`): `isaacgym_parity_240` (default, 8 x 1/240 s per control step, refsafe off) or `isaacgym_parity_480` (16 x 1/480 s, refsafe on, higher fidelity, ~2x the cost). Both use near-rigid contacts (solref 0.005) and per-body kp/kd gain scales (ankle/toe 0.2, hip/knee 0.8, torso/spine/chest 0.5) to emulate Isaac Gym's unconverged TGS solver. See `docs/physics_solver.md` for the settings and why.
-- Eval of `ckpt_amass_800m_acc97.pt` on mujoco_cpu (default `isaacgym_parity_240` preset): success 0.984, MPJPE 39.5 mm (vs gym's 0.992 / 37.4; remaining gap is physics, not a bug; eval has ±0.02 success run-to-run noise, see docs/physics_solver.md).
-- Inspect solver state via `backend.solvers[i].mj_model` / `.mj_data`.
+- `mujoco_cpu` (MuJoCo C, one solver per env) and `mujoco_gpu` (mujoco-warp, one batched solver, CUDA graph per `simulate()`) share the model build, presets and gym conversions in `backend/_newton_mujoco.py`. Both convert gym's per-joint rotation-vector dof_pos and map PD targets through the measured PhysX drive frame (`puffer_phc/assets/smpl_humanoid_drive_frame.txt`).
+- Their eval-parity physics is a `[env] solver_preset` (`--env.solver-preset`): `isaacgym_parity_240` (default, 8 x 1/240 s per control step, refsafe off) or `isaacgym_parity_480` (16 x 1/480 s, refsafe on, higher fidelity, ~2x the cost). Both use near-rigid contacts (solref 0.005) and per-body kp/kd gain scales (ankle/toe 0.2, hip/knee 0.8, torso/spine/chest 0.5) to emulate Isaac Gym's unconverged TGS solver. See `docs/physics_solver.md` for the settings and why.
+- Eval of `ckpt_amass_800m_acc97.pt` on mujoco_cpu (default `isaacgym_parity_240` preset): success 0.984, MPJPE 39.5 mm (vs gym's 0.992 / 37.4; remaining gap is physics, not a bug; eval has ±0.02 success run-to-run noise, see docs/physics_solver.md). On mujoco_gpu: 0.953-0.977 / 38.9-40.4 mm (6 runs, different failed motions each run; float32, solver tolerance 1e-6 vs 1e-8 on CPU), ~40 s wall vs ~3.5 min; raw ~55k env-steps/s at 4096 envs on an RTX 3090.
+- Inspect solver state via `backend.solvers[i].mj_model` / `.mj_data` (mujoco_cpu) or `backend.solver.mjw_model` / `.mjw_data` (mujoco_gpu, batched).
 
 ## Reference results
 
