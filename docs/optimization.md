@@ -11,22 +11,22 @@ SPS = env-steps/sec = num_envs x control-steps/sec, 4096 envs unless noted. "phy
 "env" = full `PHCPufferEnv.step`; "rollout" = policy forward + vecenv recv/send with a checkpoint policy;
 "training" = full `scripts/train.py` loop (rollout + PPO update), `config.ini`'s full config unless noted.
 
-| preset | metric | start (3.15) | 383ceff | 6151f02 | cb8ad4a | 05a3d68 | now⁷ |
-|---|---|---|---|---|---|---|---|
-| newton_120 | physics | 105801 | 106926 | 141367 | - | 141367⁶ | 142760 |
-| newton_120 | env | 75653 | 76474 | 93710 | 106360 | 106360 | 129155 |
-| newton_120 | rollout (ckpt) | n/a¹ | 64963² | 76804³ | 86608 | 86608 | 97332 |
-| newton_120 | **training** | - | - | - | - | **36.6k→53.1–53.6k⁸** | **~59.8k⁹** |
-| newton_180 | physics | 74933 | 75676 | 101333 | n/m⁴ | n/m⁴ | n/m⁴ |
-| newton_180 | env | 55775 | 56220 | 70677 | n/m⁴ | n/m⁴ | n/m⁴ |
-| isaacgym_parity_240 | physics | 55780 | 56291 | 75038 | n/m⁴ | n/m⁴ | n/m⁴ |
-| isaacgym_parity_240 | env | 44849 | 45176 | 57662 | n/m⁴ | n/m⁴ | n/m⁴ |
-| isaacgym (PhysX), ref⁵ | env / physics | 38754 / 100918 | - | - | - | - | - |
+| preset | metric | start (3.15) | 383ceff | 6151f02 | cb8ad4a | 05a3d68 | now⁷ | + GPU unlock¹⁰ |
+|---|---|---|---|---|---|---|---|---|
+| newton_120 | physics | 105801 | 106926 | 141367 | - | 141367⁶ | 142760 | 143.9k |
+| newton_120 | env | 75653 | 76474 | 93710 | 106360 | 106360 | 129155 | 129.8k |
+| newton_120 | rollout (ckpt) | n/a¹ | 64963² | 76804³ | 86608 | 86608 | 97332 | 100.7k |
+| newton_120 | **training** | - | - | - | - | **36.6k→53.1–53.6k⁸** | **~59.8k⁹** | **71.5k** |
+| newton_180 | physics | 74933 | 75676 | 101333 | n/m⁴ | n/m⁴ | n/m⁴ | - |
+| newton_180 | env | 55775 | 56220 | 70677 | n/m⁴ | n/m⁴ | n/m⁴ | - |
+| isaacgym_parity_240 | physics | 55780 | 56291 | 75038 | n/m⁴ | n/m⁴ | n/m⁴ | - |
+| isaacgym_parity_240 | env | 44849 | 45176 | 57662 | n/m⁴ | n/m⁴ | n/m⁴ | - |
+| isaacgym (PhysX), ref⁵ | env / physics | 38754 / 100918 | - | - | - | - | - | - |
 
 Motion loading (startup, not steady-state SPS): 4096 envs, 129-motion file, ~4 min -> 4.9 s cold, 4.5 s warm (§3.5).
 
-Sources: start = the pre-harness mujoco-warp 3.15 baseline; 383ceff, 6151f02, cb8ad4a, 82b9364, 05a3d68 = their
-commit messages, cross-checked against reruns at the same tree.
+Sources: start = the pre-harness mujoco-warp 3.15 baseline; 383ceff, 6151f02, cb8ad4a, 82b9364, 05a3d68, 5f28715 (§3.7),
+756833f (§3.8) = their commit messages, cross-checked against reruns at the same tree.
 ¹ the 3.15 baseline's rollout(ckpt) figure (61019) was later found to be profiler-contaminated; no clean unprofiled
 ckpt-rollout number exists at that point. ² measured *under* `--profile` (profiling adds overhead), not directly
 comparable to the unprofiled 76804/86608 cells; no unprofiled ckpt-rollout figure was recorded at 383ceff.
@@ -42,6 +42,10 @@ a `scripts/train.py` run, now at 05a3d68+§3.7+§3.8 (on top of 56bbeae). ⁸ tr
 synced-timer trace of the pre-bf16 loop) to 53084-53627 at 05a3d68 (a `scripts/train.py` run at that commit; 53627 is
 the median over 150 epochs / 20.1M steps in a longer run); see §3.6. ⁹ training SPS at 05a3d68+§3.7+§3.8: 20-epoch
 back-to-back A/B, exclusive GPU, 58209 -> 59788 (+2.7%); 150-epoch curve runs, medians 58.6-58.8k -> 60.1-60.3k; see §3.8.
+¹⁰ RTX 3090 GPU clock unlock after §3.8 (hardware/driver, not code), tree 756833f: training 59.8k -> 71.5k (epoch:
+rollout 1.17 s + update 0.71 s); bench (4096 envs, newton_120, ckpt for rollout) barely moved, so the gain is in the
+GPU-bound update. Every other number here, incl. §4's 8192-env table and §5's nsys figures, predates the unlock.
+Training SPS is with Adam; the default optimizer is now Muon, ~8% lower (§4).
 
 ## 2. How to measure
 
@@ -91,14 +95,16 @@ verify §3.7's E3).
 Training-loop SPS (not a `bench_sps.py` mode) is read off `scripts/train.py`'s own TUI (SPS and per-phase percent),
 or measured with a small wrapper that calls `clean_pufferl.evaluate`/`train` directly and wraps `vecenv.send`,
 `policy.forward`, GAE, backward and optimizer-step with CUDA-synced timers and `torch.cuda.set_sync_debug_mode` sync
-counting, median of several epochs after 2 warmup epochs.
+counting, median of several epochs after 2 warmup epochs. Since `1fc32b7` the dashboard times the rollout's one host
+sync (`torch.where(mask)`, which waits for the queued physics step) as Env, not Misc, so earlier Env/Misc splits aren't
+comparable.
 
 Rules used for every change below: GPU otherwise idle, one config per process; median of 3 repeats (300 steps, 50
 warmup, seed 0); keep a change only if it gives >=3% SPS at the measured config (the rule that dropped the
 motion-lib query dedup in section 4). Every kept change passes `bench_sps.py --check` against a freshly recorded
 reference trace and an eval on the full motion set, plus `pixi run -e default test` (and `-e isaacgym test` for that
-backend) — run for `cb8ad4a` and `383ceff` (newton 21 passed, default 4 passed 1 skipped, per `383ceff`'s commit
-message), not separately re-run for `6151f02` ("Tests: none added" per its commit message). Absolute SPS drifted
+backend) — run for `cb8ad4a` and `383ceff` (per `383ceff`'s commit message: 21 passed / 4 passed 1 skipped; the envs
+were then named newton/default, today `default` 21 passed, `isaacgym` 4 passed 1 skipped), not separately re-run for `6151f02` ("Tests: none added" per its commit message). Absolute SPS drifted
 5-10% within a single measurement session (host load), so E1-E3's keep/drop calls used interleaved A/B runs against
 a HEAD worktree rather than single absolute numbers.
 
@@ -217,7 +223,7 @@ median of 53627 over 20.1M steps at 05a3d68). Host syncs 1079 -> 186 per epoch. 
 - LSTM hidden/cell state is kept fp32 across steps (`.float()` after the autocast block); only the MLP body runs in
   bf16.
 
-### 3.7 Env step E1-E3: cheaper rotations, smaller NJMAX, syncless masked reset
+### 3.7 Env step E1-E3: cheaper rotations, smaller NJMAX, syncless masked reset (`5f28715`)
 
 On top of `05a3d68`.
 
@@ -243,7 +249,7 @@ plus a second, subset-only observation pass and a second, redundant time-t motio
 **Result**, 4096 envs, newton_120, SPS: env 39.26 -> 31.71 ms (104339 -> 129155, +24%); physics 138695 -> 142760;
 rollout(ckpt) 84958 -> 97332; training 53084 -> 57900 (+9%). Syncs/step: env ~1.2 -> 0 (log-interval reads only).
 `bench --check` PASS at each step; 129-motion eval unchanged within noise (HEAD 0.984/38.64 mm vs E1+E2+E3
-0.992/39.42 mm); `pixi run -e default test` passes (21 default, 4 isaacgym + 1 skipped).
+0.992/39.42 mm); `pixi run -e default test` 21 passed; `pixi run -e isaacgym test` 4 passed, 1 skipped.
 **Risks/caveats.**
 - Absolute SPS drifted 5-10% within this measurement session (host load), so the per-change keep/drop calls used
   interleaved A/B runs against a HEAD worktree, not the single-process absolute numbers quoted above (see §2).
@@ -254,7 +260,7 @@ rollout(ckpt) 84958 -> 97332; training 53084 -> 57900 (+9%). Syncs/step: env ~1.
 - The time-t "light" query that would skip `dof_pos`/`dof_vel` for reward+reset was not done; `get_motion_state` is
   unchanged, just called once instead of twice.
 
-### 3.8 PPO loop: last host syncs, fused Adam; bound-loss fix
+### 3.8 PPO loop: last host syncs, fused Adam; bound-loss fix (`756833f`)
 
 On top of `56bbeae`.
 
@@ -267,7 +273,8 @@ host syncs per step: `torch.where(mask)` (1, kept — needed for the data-depend
 - `Experience.store` now stores the device row indices as env ids. `env_id` is `arange(num_envs)` for the single
   native env `train.py` uses; a multi-worker vecenv would break this.
 - The `l2_init_reg` loop is skipped when `l2_reg_coef == 0` (it used to run over all params every minibatch).
-- `torch.optim.Adam(fused=...)` on CUDA only — fused Adam rejects CPU params, which isaacgym CPU runs use.
+- `torch.optim.Adam(fused=...)` on CUDA only — fused Adam rejects CPU params, which isaacgym CPU runs use. With
+  `optimizer = "muon"` (now the default), fused Adam covers only the non-Muon params.
 **Result.**
 - Back-to-back A/B under an exclusive GPU, 20 epochs: 58209 -> 59788 SPS (+2.7%).
 - 150-epoch curve runs, 3 seed pairs: medians 58.6-58.8k -> 60.1-60.3k.
@@ -310,9 +317,10 @@ with `bound_coef=10` — all pass. Codex review: one finding (fused Adam on CPU)
 | `torch.compile(policy, mode="max-autotune-no-cudagraphs")`, bf16 on, 4096 envs, on top of §3.8 | +0.5%, ~5 min autotune | same ceiling; autotune cost isn't worth 0.5% |
 | Compile the post-physics env step (reward, reset flags, masked reset, obs) as one `torch.compile` region, `mujoco_gpu` only | direct `env.step` timing 31.64 -> ~29.9 ms (~+5.6% env SPS); per-region compile cuts kernel time 3-6x (obs 1.03->0.37 ms; motion query + reward + reset flags 0.47->0.08 ms); compiling all of `step()` was no better — falls back to eager around the simulate loop | unverified: no `--check` equivalence run, no bench A/B; compiled code draws `torch.rand` from a different stream, so a check needs `--fixed-reset-times`; the warp `eval_fk` call must sit outside the compiled region (`torch.compiler.disable`); costs 10-40 s of compile at the first step |
 | Per-control-step CUDA graph | buys nothing on its own | the env step is GPU-bound and launch overhead is already hidden; non-physics GPU work is 2.65 of 32.36 ms/step, so the ceiling is 8.2% env / ~6.3% rollout |
+| Muon optimizer (`MuonAdam`: Muon on 2-D weights except mu/value/disc-logit heads, Adam on the rest, momentum 0.95), 4096 envs | ~8% lower training SPS: optimizer step ~21 ms vs ~3 ms fused Adam; `torch.compile` of the step doesn't help (matmul-bound); batched Newton-Schulz would save maybe ~2%; at lr 1e-4 learned slower over 20 epochs, untested beyond | kept as the default by choice, not for speed; learning benefit untested. `[train.isaacgym]` pins Adam (torch 2.3.1 has no `torch.optim.Muon`) |
 | Custom physics kernels (patching newton or mujoco-warp internals beyond the existing `M_BLOCK_DENSE_MAX`/`block_dim` overrides) | not attempted | out of scope by user decision |
 
-8192 envs, on top of `56bbeae` plus §3.8's bound-loss fix:
+8192 envs, on top of `56bbeae` plus §3.8's bound-loss fix (before the GPU unlock¹⁰):
 
 | envs | physics | env | rollout | env-side VRAM | training SPS |
 |---|---|---|---|---|---|
@@ -322,10 +330,15 @@ with `bound_coef=10` — all pass. Codex review: one finding (fused Adam on CPU)
 That's +7% training SPS. Not taken: it changes the rollout length or the batch, so it needs a learning-curve check.
 NJMAX peak 92 of 160, no overflow.
 
+Not a speed item: mujoco's `dof_force` is the applied PD torque (qfrc_actuator), ~5-9x Isaac Gym's, so the gym-tuned
+`rew_power_coef` 0.0005 failed on newton_120 (eval at epoch 1500, 129 motions: success 0.039 vs 0.992 / 43.5 mm at
+0.0001, `4cabaf4`).
+
 ## 5. Where time goes now, and next candidates
 
-Epoch split, 4096 envs, on top of 56bbeae + §3.8: rollout 1.23 s, update 1.03 s. The update is GPU-bound (GEMMs 76%
-of it, §4's `torch.compile` rows), so it can't get faster without fewer FLOPs. Rollout policy fwd+sample is
+Epoch split, 4096 envs, 756833f after the GPU unlock¹⁰, Adam: rollout 1.17 s, update 0.71 s (1.23 / 1.03 s before §3.8
+and the unlock). The update is GPU-bound (GEMMs 76% of it, §4's `torch.compile` rows), so it gets faster only with
+fewer FLOPs or higher clocks (the unlock cut it 31%). Rollout policy fwd+sample is
 ~3.3 ms/step. The env step itself is physics graph 29.5 ms + 2.65 ms eager (post-physics, §3.7).
 
 In-graph kernel time, `physics` mode, newton_120 @ 4096 envs, from an `nsys stats --report cuda_gpu_kern_sum` run
@@ -356,6 +369,7 @@ Next candidates, roughly ranked, all estimates pending measurement:
 3. **Fewer PPO update epochs or a smaller critic** — training-dynamics tradeoffs; left to a deliberate call (the
    user's) rather than bundled into a throughput change.
 4. **Turn `bound_coef` on with a curve check** — the gradient path is now correct (§3.8); PHC used 10, untested here.
-5. **GAE on the GPU**, removing the remaining CPU round trip in the update's advantage computation.
+5. **GAE on the GPU**: `train()` still copies dones/values/rewards to numpy for pufferlib's compiled Cython
+   `c_gae.compute_gae`. Unmeasured, likely <1 ms/epoch.
 6. **Dense Cholesky is still the single largest in-graph kernel (~9.9 ms).** Further gains there need a faster
    mujoco-warp factorization path or exploiting tree sparsity more than today's block-dense trade; not attempted.
