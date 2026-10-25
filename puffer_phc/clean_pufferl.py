@@ -4,7 +4,6 @@ import os
 import time
 import random
 import psutil
-import pyximport
 
 from threading import Thread
 from collections import defaultdict, deque
@@ -22,9 +21,7 @@ import pufferlib.utils
 import pufferlib.pytorch
 import pufferlib.cleanrl
 
-# For the fast Cython GAE implementation
-pyximport.install(setup_args={"include_dirs": np.get_include()})
-from c_gae import compute_gae  # noqa
+from c_gae import compute_gae  # Cython GAE, compiled and installed by pufferlib
 
 torch.set_float32_matmul_precision("high")
 
