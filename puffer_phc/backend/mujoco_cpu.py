@@ -8,7 +8,6 @@ constraint solve per env. Inspect env i through `solvers[i].mj_model` / `solvers
 The Newton state lives on the CPU. The gym tensors are copies on `device`, refreshed after every step.
 """
 
-import atexit
 
 import mujoco
 import newton
@@ -44,7 +43,6 @@ class MujocoCPUBackend(nc.NewtonMujocoBackend):
 
         vars(self).update(nc.gym_tensors(num_envs, self.num_bodies, self.num_dof, self.device))
         self._stats_sum, self._stats_max = np.zeros(3), np.zeros(2)  # (steps, niter, ncon), (niter, ncon)
-        atexit.register(lambda: print(self.solver_stats()))
         self.refresh()
         self._open_viewer(self.states[0])  # ponytail: model is single-world (per-env solvers), so only env 0 is shown
 

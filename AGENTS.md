@@ -50,7 +50,7 @@ From `/workspace/puffer_phc` inside the container:
 ```bash
 export PATH=~/.pixi/bin:$PATH PYTHONPATH=$PWD
 
-# Train on mujoco_gpu with newton_120 (config.ini defaults: 4096 envs, 800M steps; checkpoints and full eval every 1000 epochs under experiments/<exp_id>/)
+# Train on mujoco_gpu with newton_120 (config.ini defaults: 4096 envs, 800M steps; checkpoints every 1000 epochs, full eval + motion resample every 500 under experiments/<exp_id>/)
 pixi run python scripts/train.py -m data/amass_train_take6_upright.pkl
 
 # Smoke test (~1 min)

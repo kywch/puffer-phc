@@ -73,8 +73,7 @@ class EvalStats:
         self.results = None
         self.results_by_motion = None
 
-        self.pbar = tqdm(range(self.num_unique_motions // self.num_envs))
-        self.pbar.set_description("")
+        self.pbar = tqdm(total=-(-self.num_unique_motions // self.num_envs), desc="Eval batches")
 
     def post_step_eval(self):
         motion_num_steps = self.task_env.get_motion_steps()
@@ -141,6 +140,7 @@ class EvalStats:
             self.mpjpe_all.append(all_mpjpe)
             self.pred_pos_all += all_body_pos_pred
             self.gt_pos_all += all_body_pos_gt
+            self.pbar.update(1)
 
             # All motions have been fully evaluated
             if self.task_env.motion_sample_start_idx + self.num_envs >= self.num_unique_motions:
@@ -151,13 +151,11 @@ class EvalStats:
             self.task_env.forward_motion_samples()
             self.terminate_state[:] = False
             self.played_steps_buf[:] = 0
-
-            self.pbar.update(1)
-            self.pbar.refresh()
             self.mpjpe, self.gt_pos, self.pred_pos = [], [], []
 
-        update_str = f"Terminated: {self.terminate_state.sum().item()} | max frames: {curr_max} | steps {self.curr_steps} | Start: {self.task_env.motion_sample_start_idx} | Succ rate: {self.success_rate:.3f} | Mpjpe: {np.mean(self.mpjpe_all) * 1000:.3f}"
-        self.pbar.set_description(update_str)
+        self.pbar.set_postfix_str(
+            f"step {self.curr_steps}/{int(curr_max)}, ended {self.terminate_state.sum().item()}/{self.num_envs}"
+        )
 
         return False, next_batch
 
@@ -271,17 +269,15 @@ def train(args, vec_env, policy, run=None, exp_id=None, skip_resample=False, fin
 
     while data.global_step < train_config.total_timesteps:
         if not skip_resample and data.epoch > 0 and data.epoch % train_config.motion_resample_interval == 0:
-            # Evaluate the model every checkpoint_interval epochs (1500 in config.ini)
-            if data.epoch % train_config.checkpoint_interval == 0:
-                eval_stats = EvalStats(vec_env, failed_save_path=os.path.join(data_dir, f"failed_{data.epoch:06d}.pkl"))
-                rollout(vec_env, policy, eval_stats)
-                eval_results = eval_stats.update_env_and_close()
-                if data.run:
-                    eval_results["0verview/agent_steps"] = data.global_step
-                    eval_results["0verview/epoch"] = data.epoch
-                    clean_pufferl.log_dict(run, eval_results, data.global_step)
+            # Evaluate all motions, then resample with the updated failure weights
+            eval_stats = EvalStats(vec_env, failed_save_path=os.path.join(data_dir, f"failed_{data.epoch:06d}.pkl"))
+            rollout(vec_env, policy, eval_stats)
+            eval_results = eval_stats.update_env_and_close()
+            if data.run:
+                eval_results["0verview/agent_steps"] = data.global_step
+                eval_results["0verview/epoch"] = data.epoch
+                clean_pufferl.log_dict(run, eval_results, data.global_step)
 
-            # Resample motions every motion_resample_interval epochs (500 in config.ini)
             vec_env.env.resample_motions()
 
             # Reset the envs and lstm hidden states

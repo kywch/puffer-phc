@@ -5,7 +5,6 @@ world: no inter-env contact, independent constraint solve. Inspect the solver vi
 `solver.mjw_data` (batched, on GPU); `solver.mj_model` is a host copy for introspection only.
 """
 
-import atexit
 import warnings
 
 import mujoco_warp
@@ -56,7 +55,6 @@ class MujocoGPUBackend(nc.NewtonMujocoBackend):
         vars(self).update(nc.gym_tensors(n, self.num_bodies, self.num_dof, self.device))
         self._stats_sum, self._stats_max = torch.zeros(2, 2, device=self.device)  # (niter, nefc)
         self._stats_steps = 0
-        atexit.register(lambda: print(self.solver_stats()))
         self.refresh()
         self._open_viewer(self.state)  # one N-world model/state covers all envs; the viewer lays worlds out itself
 
