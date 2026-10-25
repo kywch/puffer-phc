@@ -134,7 +134,7 @@ Isaac Gym (Python 3.8, pytorch 2.3.1/CUDA 12.1, Isaac Gym 1.0rc4) is kept as a l
 
 
 # Notes
-* `python scripts/train.py --help` shows the full list of options for the environment and training, which allows you to override the defaults in the config file.
+* `python scripts/train.py --help` shows the full list of options for the environment and training, which allows you to override the defaults in the config file. Per-backend overrides go in `[<section>.<backend>]` (e.g. `[env.isaacgym]`, `[train.isaacgym]`); CLI flags still win.
 * I tested the [style discriminator](https://arxiv.org/abs/2104.02180) in the original PHC repo and here, saw that it did not improve the imitation performance, so it is optional and off by default. To enable it, set `use_amp_obs = True` in the config, or add `--env.use-amp-obs True` to the command.
 * I saw several times that "fine-tuning" pretrained weights with `-c <CHECKPOINT PATH>` resulted in much faster learning. The [L2 init reg loss](https://arxiv.org/abs/2308.11958) is being logged in the training dashboard, and you can see greater L2 distance when learning from scratch compared to fine-tuning.
 * As mentioned in the [PHC paper](https://arxiv.org/abs/2305.06456), I saw that the 6-layer MLP perform better than shallow MLPs, and SiLU activations perform better than ReLUs.

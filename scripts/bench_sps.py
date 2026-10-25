@@ -40,6 +40,7 @@ def parse_args():
     p.add_argument("--record")
     p.add_argument("--check")
     p.add_argument("--tol", type=float, default=1e-2)
+    p.add_argument("--fixed-reset-times", action="store_true", help="one reset time per motion: RNG-free --record")
     p.add_argument("--checkpoint", help="policy weights for rollout mode (default: random init)")
     p.add_argument("--motion-file", default="data/amass_train_take6_upright.pkl")
     p.add_argument("--out", default="tmp/speed/bench.jsonl")
@@ -63,6 +64,7 @@ import pufferlib.vector
 import torch
 
 from puffer_phc.environment import env_creator
+from puffer_phc.motion_lib import MotionLibBase
 from puffer_phc.policy import PHCPolicy
 
 
@@ -200,6 +202,12 @@ def main():
             subprocess.run([sys.executable, *sys.argv, "--num-envs", str(n), "--solver-preset", p], check=True)
         return
     ((preset, n),) = configs
+    if args.fixed_reset_times:  # a golden-ratio phase per motion id instead of torch.rand
+
+        def fixed_time(self, ids):
+            return ((ids * 0.618034) % 1 * self._motion_lengths[ids] * 30).floor() / 30
+
+        MotionLibBase.sample_time_interval = fixed_time
     sha = subprocess.run(["git", "describe", "--always", "--dirty"], capture_output=True, text=True).stdout.strip()
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     for seed in (random.seed, np.random.seed, torch.manual_seed):

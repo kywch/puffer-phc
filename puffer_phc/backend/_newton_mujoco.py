@@ -8,6 +8,7 @@ boundary: dof_pos = rotation vector per joint, dof_vel = child-frame relative an
 import itertools
 import os
 import sys
+import time
 import xml.etree.ElementTree as ET
 
 import mujoco
@@ -173,9 +174,9 @@ class NewtonMujocoBackend(SimBackend):
             return
         from newton.viewer import ViewerGL  # heavy GL/pyglet import: only done for play mode (headless=False)
 
-        self.viewer = ViewerGL(vsync=True)  # vsync paces rendering to the display refresh; no manual sleep needed
+        self.viewer = ViewerGL(vsync=True)
         self.viewer.set_model(self.model)
-        self._viewer_state, self._render_t = state, 0.0
+        self._viewer_state, self._render_t, self._wall_t0 = state, 0.0, None
 
     def render(self):
         """Pump one viewer frame. Exits the process once the window is closed, like the isaacgym backend."""
@@ -188,6 +189,11 @@ class NewtonMujocoBackend(SimBackend):
         self.viewer.log_state(self._viewer_state)
         self.viewer.end_frame()
         self._render_t += self.dt
+        # Real-time playback: one frame per control step (1/30 s), so vsync alone (60 Hz) would play at 2x
+        lag = time.perf_counter() - (self._wall_t0 or 0.0) - self._render_t
+        if self._wall_t0 is None or lag > 0:  # first frame, or behind after a stall: re-anchor, don't fast-forward
+            self._wall_t0 = time.perf_counter() - self._render_t
+        time.sleep(max(0.0, self._wall_t0 + self._render_t - time.perf_counter()))
 
     def close(self):
         if self.viewer is not None:

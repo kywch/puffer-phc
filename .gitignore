@@ -7,12 +7,14 @@ eval_summary_*.json
 results_by_motion_*.tsv
 tmp/
 MUJOCO_LOG.TXT
+imgui.ini
 
 # Local data, checkpoints and the Isaac Gym SDK (an isaacgym/ dir here shadows the real package)
 *.pt
 data/
 smpl/*.pkl
 isaacgym/
+*.motion_cache/
 
 # Python
 __pycache__/

@@ -94,7 +94,7 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         self.log_interval = log_interval
         self.episode_returns = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
         self.episode_lengths = torch.zeros(self.num_envs, dtype=torch.int32, device=self.device)
-        self.episode_count = 0
+        self._episode_count = torch.zeros((), dtype=torch.int64, device=self.device)
         # sums over finished episodes since the last log: return, length, truncations, count
         self._ep_stats = torch.zeros(4, dtype=torch.float64, device=self.device)
 
@@ -125,8 +125,8 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         if self.clip_actions:
             self.actions.clamp_(-1, 1)
 
-        # obs, reward, done are put into the buffers
-        self.env.step(self.actions)
+        # obs, reward are put into the buffers; the done envs are reset in place
+        done = self.env.step(self.actions)[2]
 
         # self.demo = self.env.demo
         # self.state = self.env.state
@@ -141,19 +141,15 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         # Early-terminated envs are in self.env.extras["terminate"]
         # NOTE: Truncated does NOT mean all the all parts of the motion has been played out because
         # during reset, the initial frame is randomly selected, so it could start from the very end.
-        done = self.env.reset_buf
         self.terminals[:] = self.env.extras["terminate"]
         self.truncations[:] = done & ~self.terminals
         self.masks[:] = ~self.truncations
         stats = torch.stack([self.episode_returns, self.episode_lengths, self.truncations, done]).double()
         self._ep_stats += stats @ done.double()
 
-        reset_indices = torch.nonzero(done).squeeze(-1)  # the env's one sync: env.reset samples motions per env id
-        if len(reset_indices) > 0:
-            self.env.reset(reset_indices)
-            self.episode_count += len(reset_indices)
-            self.episode_returns.index_fill_(0, reset_indices, 0)
-            self.episode_lengths.index_fill_(0, reset_indices, 0)
+        self._episode_count += done.sum()
+        self.episode_returns.masked_fill_(done, 0)
+        self.episode_lengths.masked_fill_(done, 0)
 
         self.episode_returns += self.rewards * ~self.env.reset_buf
         self.episode_lengths += ~self.env.reset_buf
@@ -182,6 +178,10 @@ class PHCPufferEnv(pufferlib.PufferEnv):
 
         return self.observations, rew, self.terminals, self.truncations, info
 
+    @property
+    def episode_count(self):
+        return int(self._episode_count)  # syncs: read at log time only
+
     def render(self):
         return self.env.render()
 
@@ -195,6 +195,7 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         ret, length, trunc_rate, _ = (self._ep_stats / self._ep_stats[3]).tolist()  # nan if no episode ended
         info = {"episode_return": ret, "episode_length": length, "epi_trunc_rate": trunc_rate}
         self._ep_stats[:] = 0
+        self.env.backend.warn_overflow()  # once per log interval (= once per epoch at the default config)
 
         return [info]
 

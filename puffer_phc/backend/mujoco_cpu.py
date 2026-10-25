@@ -69,14 +69,14 @@ class MujocoCPUBackend(nc.NewtonMujocoBackend):
             self.simulate()
         self.refresh()
 
-    def reset_envs(self, env_ids):
-        """Push the root_states/dof_pos/dof_vel rows of env_ids to the sim; PD targets := dof_pos."""
-        rows = (self.root_states[env_ids], self.dof_pos[env_ids], self.dof_vel[env_ids])
+    def reset_envs(self, mask):
+        """Push the root_states/dof_pos/dof_vel rows where mask is set to the sim; PD targets := dof_pos."""
+        rows = (self.root_states, self.dof_pos, self.dof_vel)
         q, qd, targets = (x.cpu() for x in nc.gym_to_newton(self._drive_frame, *rows))
-        for k, i in enumerate(env_ids.tolist()):
-            self._q[i][:] = q[k]
-            self._qd[i][:] = qd[k]
-            self._target[i][7:] = targets[k]
+        for i in mask.nonzero().flatten().tolist():
+            self._q[i][:] = q[i]
+            self._qd[i][:] = qd[i]
+            self._target[i][7:] = targets[i]
             self.solvers[i].mj_data.qacc_warmstart[:] = 0  # drop the stale warm start; don't use solver.reset()
             newton.eval_fk(self.model, self.states[i].joint_q, self.states[i].joint_qd, self.states[i])
 

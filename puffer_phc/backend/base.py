@@ -38,9 +38,9 @@ class SimBackend(ABC):
         """One sim step (1/60 s), no refresh."""
 
     @abstractmethod
-    def reset_envs(self, env_ids):
-        """Push rows env_ids of root_states/dof_pos/dof_vel (written by the caller) to the sim; PD targets := dof_pos.
-        The caller then calls refresh(), which must leave consistent body state for those rows."""
+    def reset_envs(self, mask):
+        """Push the root_states/dof_pos/dof_vel rows (written by the caller) where mask (bool [N]) is set to the sim;
+        PD targets := dof_pos. The caller then calls refresh(), which must leave consistent body state for those rows."""
 
     @abstractmethod
     def refresh(self): ...
@@ -50,3 +50,6 @@ class SimBackend(ABC):
 
     def render(self):
         pass
+
+    def warn_overflow(self):
+        """Warn if the solver has dropped constraints (mujoco_gpu); called once per log interval."""
