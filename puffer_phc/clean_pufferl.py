@@ -107,9 +107,10 @@ def evaluate(data):
     while not experience.full:
         with profile.env:
             o, r, d, t, info, env_id, mask = data.vecenv.recv()
+            # Data-dependent row count: the CPU waits here for the queued physics step, so it's timed as env
+            idx = torch.where(torch.as_tensor(mask, device=config.device))[0]
 
         with profile.eval_misc:
-            idx = torch.where(torch.as_tensor(mask, device=config.device))[0]  # the rollout loop's one host sync
             data.global_step += len(idx)
 
             o_device = torch.as_tensor(o, device=config.device)
@@ -625,25 +626,25 @@ class Experience:
 
 class Utilization(Thread):
     def __init__(self, delay=1, maxlen=20):
-        super().__init__()
+        super().__init__(daemon=True)  # a non-daemon poller kept the process alive after Ctrl-C
         self.cpu_mem = deque(maxlen=maxlen)
         self.cpu_util = deque(maxlen=maxlen)
         self.gpu_util = deque(maxlen=maxlen)
         self.gpu_mem = deque(maxlen=maxlen)
 
+        self.proc = psutil.Process()
         self.delay = delay
         self.stopped = False
         self.start()
 
     def run(self):
         while not self.stopped:
-            self.cpu_util.append(100 * psutil.cpu_percent())
-            mem = psutil.virtual_memory()
-            self.cpu_mem.append(100 * mem.active / mem.total)
+            self.cpu_util.append(self.proc.cpu_percent())  # this process, top-style: 100 = one core
+            self.cpu_mem.append(100 * self.proc.memory_info().rss / psutil.virtual_memory().total)
             if torch.cuda.is_available():
                 self.gpu_util.append(torch.cuda.utilization())
                 free, total = torch.cuda.mem_get_info()
-                self.gpu_mem.append(100 * free / total)
+                self.gpu_mem.append(100 * (1 - free / total))  # device-wide, used
             else:
                 self.gpu_util.append(0)
                 self.gpu_mem.append(0)
