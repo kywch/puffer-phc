@@ -313,7 +313,8 @@ def train(args, vec_env, policy, run=None, exp_id=None, skip_resample=False, fin
             decay = math.exp(-data.config.lr_decay_rate * data.epoch)
             if decay < data.config.lr_decay_floor:
                 decay = data.config.lr_decay_floor
-            data.optimizer.param_groups[0]["lr"] = data.config.learning_rate * decay
+            for g in data.optimizer.param_groups:
+                g["lr"] = data.config.learning_rate * decay
 
     uptime = data.profile.uptime
 
@@ -577,13 +578,14 @@ if __name__ == "__main__":
 
     p = configparser.ConfigParser()
     p.read(args.config)
-    # [env.<backend>] overrides [env] for that backend, e.g. the gym-tuned PD/power values for isaacgym
-    backend_section = f"env.{_peek_backend(sys.argv[1:])}"
-    if p.has_section(backend_section):
-        p["env"].update(p[backend_section])
+    # [<section>.<backend>] overrides [<section>] for that backend, e.g. gym-tuned values for isaacgym
+    backend = _peek_backend(sys.argv[1:])
+    for section in ("env", "train"):
+        if p.has_section(f"{section}.{backend}"):
+            p[section].update(p[f"{section}.{backend}"])
 
     for section in p.sections():
-        if section.startswith("env."):
+        if section.startswith(("env.", "train.")):
             continue
         for key in p[section]:
             if section == "base":

@@ -66,7 +66,12 @@ def create(config, vecenv, policy, optimizer=None, run=None):
         policy = torch.compile(policy, mode=config.compile_mode)
 
     fused = torch.device(config.device).type == "cuda"  # fused Adam rejects CPU params (isaacgym CPU runs)
-    optimizer = torch.optim.Adam(policy.parameters(), lr=config.learning_rate, eps=1e-5, fused=fused)
+    if config.optimizer == "muon":
+        assert hasattr(torch.optim, "Muon"), "optimizer = muon needs torch >= 2.9; use --train.optimizer adam"
+        num_actions = vecenv.single_action_space.shape[0]
+        optimizer = MuonAdam(policy.parameters(), num_actions, config.learning_rate, config.momentum, fused)
+    else:
+        optimizer = torch.optim.Adam(policy.parameters(), lr=config.learning_rate, eps=1e-5, fused=fused)
 
     # Store initial policy weights for regenerative regularization
     # https://arxiv.org/pdf/2308.11958
@@ -344,7 +349,8 @@ def train(data):
         if config.anneal_lr:
             frac = 1.0 - data.global_step / config.total_timesteps
             lrnow = frac * config.learning_rate
-            data.optimizer.param_groups[0]["lr"] = lrnow
+            for g in data.optimizer.param_groups:
+                g["lr"] = lrnow
 
         for k, v in list(losses.items()):
             setattr(losses, k, float(v))
@@ -622,6 +628,32 @@ class Experience:
             # For the replay, the order does not matter
             rep_idx = torch.randperm(self.batch_size).reshape(self.num_minibatches, self.minibatch_size)
             self.b_amp_obs_replay = self.amp_obs_replay[rep_idx]
+
+
+class MuonAdam:
+    """Muon on every 2-D weight except the output heads (mu, value, disc logits); Adam on those and the 1-D params.
+    Muon's lr is scaled to match AdamW's update RMS, so one learning_rate serves both."""
+
+    def __init__(self, params, num_actions, lr, momentum, fused):
+        params = list(params)
+        hidden = [p for p in params if p.ndim == 2 and p.shape[0] not in (1, num_actions)]
+        hidden_ids = {id(p) for p in hidden}
+        self.opts = [
+            torch.optim.Muon(hidden, lr=lr, momentum=momentum, weight_decay=0, adjust_lr_fn="match_rms_adamw"),
+            torch.optim.Adam([p for p in params if id(p) not in hidden_ids], lr=lr, eps=1e-5, fused=fused),
+        ]
+        self.param_groups = [g for o in self.opts for g in o.param_groups]
+
+    def zero_grad(self):
+        for o in self.opts:
+            o.zero_grad()
+
+    def step(self):
+        for o in self.opts:
+            o.step()
+
+    def state_dict(self):
+        return [o.state_dict() for o in self.opts]
 
 
 class Utilization(Thread):

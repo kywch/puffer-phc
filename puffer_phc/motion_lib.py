@@ -154,9 +154,7 @@ def _motion_cache_path(cache_dir, motion_key):
 def compute_motion_dof_vels_jit(local_rotation, fps):
     # type: (Tensor, int) -> Tensor
     dt = 1.0 / fps
-    diff_quat_data = torch_utils.quat_mul(
-        torch_utils.quat_conjugate(local_rotation[:-1]), local_rotation[1:]
-    )
+    diff_quat_data = torch_utils.quat_mul(torch_utils.quat_conjugate(local_rotation[:-1]), local_rotation[1:])
     diff_angle, diff_axis = torch_utils.quat_to_angle_axis(diff_quat_data)
     dof_vel = (diff_axis * diff_angle.unsqueeze(-1) / dt)[:, 1:, :]
     return torch.cat([dof_vel, dof_vel[-1:]], dim=0)
@@ -832,7 +830,9 @@ class MotionLibSMPL(MotionLibBase):
             for i in range(0, big_pose.shape[0], chunk):
                 pose_c = big_pose[i : i + chunk].to(device)
                 trans_c = big_trans[i : i + chunk].to(device)
-                vertices, joints = mesh_parser.get_joints_verts(pose_c, betas[None].expand(pose_c.shape[0], -1), trans_c)
+                vertices, joints = mesh_parser.get_joints_verts(
+                    pose_c, betas[None].expand(pose_c.shape[0], -1), trans_c
+                )
                 offset = joints[:, 0] - trans_c  # add back the SMPL root offset baked into trans_c
                 verts = vertices[:, pick] if pick is not None else vertices
                 heights.append((verts - offset[:, None])[..., -1].min(dim=-1).values.cpu())

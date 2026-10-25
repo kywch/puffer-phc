@@ -190,7 +190,8 @@ class NewtonMujocoBackend(SimBackend):
         self.viewer.end_frame()
         self._render_t += self.dt
         # Real-time playback: one frame per control step (1/30 s), so vsync alone (60 Hz) would play at 2x
-        if self._wall_t0 is None:
+        lag = time.perf_counter() - (self._wall_t0 or 0.0) - self._render_t
+        if self._wall_t0 is None or lag > 0:  # first frame, or behind after a stall: re-anchor, don't fast-forward
             self._wall_t0 = time.perf_counter() - self._render_t
         time.sleep(max(0.0, self._wall_t0 + self._render_t - time.perf_counter()))
 
