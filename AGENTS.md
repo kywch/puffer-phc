@@ -104,9 +104,7 @@ The training dashboard is a rich live table (CPU is this process, top-style, 100
 
 ## Known issues
 
-- **Shared memory:** the devcontainer has the Docker default of 64 MB `/dev/shm`. With multiple workers, motion loading (`puffer_phc/motion_lib.py`) passes tensors through shared memory; a worker dies with `No space left on device` and the main process hangs forever in `queue.get()`.
-  - Current workaround: `num_thread=1` in `puffer_phc/humanoid_phc.py` (committed).
-  - Permanent fix: `--shm-size=16g` was added to `/workspace/docker/.devcontainer/devcontainer.json`, but it takes effect only after a devcontainer rebuild. After the rebuild, `num_thread` can go back to 4.
+- **Shared memory:** the devcontainer has the Docker default of 64 MB `/dev/shm` (`--shm-size=16g` in `/workspace/docker/.devcontainer/devcontainer.json` applies after a rebuild). Motion loading is single-process; its multi-worker path, which hung on this limit, was removed.
 - **No debugger in the container:** ptrace is blocked, so `py-spy dump` fails. Inspect hung processes through `/proc/<pid>/wchan` and the log instead.
 
 ## Converting more AMASS data

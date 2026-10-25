@@ -13,7 +13,7 @@ from typing import List, Type, Dict, Optional
 
 import numpy as np
 import torch
-import scipy.ndimage.filters as filters
+from scipy import ndimage as filters
 
 from puffer_phc.torch_utils import (
     quat_identity,

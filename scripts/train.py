@@ -113,8 +113,9 @@ class EvalStats:
             curr_max = motion_num_steps.max()
 
         self.mpjpe.append(info["mpjpe"])
-        self.gt_pos.append(info["body_pos_gt"])
-        self.pred_pos.append(info["body_pos"])
+        n = self.num_unique_motions - self.task_env.motion_sample_start_idx  # envs past n repeat earlier motions
+        self.gt_pos.append(info["body_pos_gt"][:n])
+        self.pred_pos.append(info["body_pos"][:n])
         self.curr_steps += 1
 
         # All motions fully played out, or all envs are terminated
@@ -133,9 +134,9 @@ class EvalStats:
 
             all_mpjpe = [all_mpjpe[: (i - 1), idx].mean() for idx, i in enumerate(motion_num_steps)]
             all_body_pos_pred = np.stack(self.pred_pos)
-            all_body_pos_pred = [all_body_pos_pred[: (i - 1), idx] for idx, i in enumerate(motion_num_steps)]
+            all_body_pos_pred = [all_body_pos_pred[: (i - 1), idx] for idx, i in enumerate(motion_num_steps[:n])]
             all_body_pos_gt = np.stack(self.gt_pos)
-            all_body_pos_gt = [all_body_pos_gt[: (i - 1), idx] for idx, i in enumerate(motion_num_steps)]
+            all_body_pos_gt = [all_body_pos_gt[: (i - 1), idx] for idx, i in enumerate(motion_num_steps[:n])]
 
             self.mpjpe_all.append(all_mpjpe)
             self.pred_pos_all += all_body_pos_pred
@@ -188,7 +189,7 @@ class EvalStats:
         print(f"Success Rate: {self.success_rate:.10f}")
         print("All: ", " \t".join([f"{k}: {v:.3f}" for k, v in metrics_all_print.items()]))
         print("Succ: ", " \t".join([f"{k}: {v:.3f}" for k, v in metrics_succ_print.items()]))
-        print("Failed keys: ", len(self.failed_keys), ",", self.failed_keys)
+        print(f"Failed: {len(self.failed_keys)} motions (keys in failed_*.pkl)")
 
         self.results = {
             "eval/success_rate": float(self.success_rate),
@@ -213,19 +214,16 @@ class EvalStats:
     def update_env_and_close(self):
         # NOTE: Assuming that resampling motion will happen right after the eval,
         # so not resetting the env here.
-        termination_history = self.task_env.untoggle_eval_mode(self.failed_keys)
+        self.task_env.untoggle_eval_mode(self.failed_keys)
 
         torch.cuda.empty_cache()
         gc.collect()
 
         if self.failed_save_path:
-            joblib.dump(
-                {
-                    "failed_keys": self.failed_keys,
-                    "termination_history": termination_history,
-                },
-                self.failed_save_path,
-            )
+            env = self.task_env
+            m, s, keys = env.motion_sampler, env.start_sampler, env._motion_train_lib._motion_data_keys
+            joblib.dump(dict(failed_keys=self.failed_keys, motion_keys=keys, h=m.h, last=m.last, load_count=m.load_count,
+                             att=s.att.cpu().numpy(), succ=s.succ.cpu().numpy()), self.failed_save_path)  # fmt: skip
 
         return self.results
 

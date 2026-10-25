@@ -33,7 +33,9 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         log_interval=32,
         rew_power_coef=0.0005,
         use_amp_obs=False,
-        auto_pmcp_soft=False,
+        motion_sampling="pmcp",
+        start_sampling="sgs",
+        start_sampling_target=0.5,
         termination_distance=0.25,
         kp_scale=1.0,
         kd_scale=1.0,
@@ -47,7 +49,9 @@ class PHCPufferEnv(pufferlib.PufferEnv):
                 "motion_file": motion_file,
                 "rew_power_coef": rew_power_coef,
                 "use_amp_obs": use_amp_obs,
-                "auto_pmcp_soft": auto_pmcp_soft,
+                "motion_sampling": motion_sampling,
+                "start_sampling": start_sampling,
+                "start_sampling_target": start_sampling_target,
                 "termination_distance": termination_distance,
                 "kp_scale": kp_scale,
                 "kd_scale": kd_scale,
@@ -195,6 +199,10 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         ret, length, trunc_rate, _ = (self._ep_stats / self._ep_stats[3]).tolist()  # nan if no episode ended
         info = {"episode_return": ret, "episode_length": length, "epi_trunc_rate": trunc_rate}
         self._ep_stats[:] = 0
+        counts = self.env.start_sampler.counts
+        info["sampling/probe_success"] = (counts[1] / counts[0]).item()  # nan if no probe ended
+        info["sampling/pmcp_fail_mass"] = self.env.motion_sampler.fail_mass
+        counts.zero_()
         self.env.backend.warn_overflow()  # once per log interval (= once per epoch at the default config)
 
         return [info]

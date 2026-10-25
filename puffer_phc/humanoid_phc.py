@@ -1,4 +1,5 @@
 import os
+import copy
 from enum import Enum
 from types import SimpleNamespace
 
@@ -12,6 +13,7 @@ from puffer_phc import ASSET_DIR
 from puffer_phc.backend import make_backend
 from puffer_phc.poselib_skeleton import SkeletonTree
 from puffer_phc.motion_lib import MotionLibSMPL, FixHeightMode
+from puffer_phc.sampling import MotionSampler, StartSampler
 from puffer_phc.torch_utils import (
     to_torch,
     exp_map_to_quat,
@@ -124,7 +126,7 @@ class HumanoidPHC:
         self.progress_buf += 1
 
         # reward, reset and eval all compare against the reference at this frame
-        motion_times = self.progress_buf * self.dt + self._motion_start_times + self._motion_start_times_offset
+        motion_times = self.progress_buf * self.dt + self._motion_start_times
         motion_res = self._get_state_from_motionlib_cache(self._sampled_motion_ids, motion_times, self._global_offset)
         self._compute_reward(motion_res)
         self._compute_reset(motion_res)
@@ -144,6 +146,9 @@ class HumanoidPHC:
             self.extras["body_pos_gt"] = motion_res["rg_pos"].cpu().numpy()
 
         done = self.reset_buf.clone()
+        if not self.flag_test:
+            ids = self._motion_lib._curr_motion_ids[self._sampled_motion_ids]
+            self.start_sampler.record(ids, self.progress_buf, done, self._terminate_buf)
         self._reset_masked(done)
         self._compute_observations()  # observation for the next step, after the reset
 
@@ -270,7 +275,7 @@ class HumanoidPHC:
         env_config = self.cfg["env"]
 
         ### Overall env-related
-        self.max_episode_length = env_config.get("episode_length", 300)
+        self.max_episode_length = self._step_cap = env_config.get("episode_length", 300)  # training episode cap
         self._enable_early_termination = True
         termination_distance = env_config.get("termination_distance", 0.25)
         self._termination_distances = to_torch(np.array([termination_distance] * self.num_bodies), device=self.device)
@@ -318,7 +323,6 @@ class HumanoidPHC:
         self._res_action = env_config.get("res_action", False)
 
         ### Motion/AMP-related
-        self.seq_motions = False
         self._min_motion_len = 5  # env_config.get("min_length", -1)
 
         # NOTE: Some AMASS motion is over 7000 frames, and it substantially
@@ -332,11 +336,6 @@ class HumanoidPHC:
         self.use_amp_obs = env_config.get("use_amp_obs", False)
         self._num_amp_obs_steps = 10
         self._amp_root_height_obs = True
-
-        # NOTE: Auto PMCP updates the motion sampling prob during training
-        # See IMAmpAgent.update_training_data() in the eval function
-        self.auto_pmcp = False
-        self.auto_pmcp_soft = env_config.get("auto_pmcp_soft", False)
 
         ### Reward-related
         self.use_power_reward = True
@@ -580,7 +579,6 @@ class HumanoidPHC:
 
         self._global_offset = torch.zeros([self.num_envs, 3]).to(self.device)  # pos offset, so dim is 3
         self._motion_start_times = torch.zeros(self.num_envs).to(self.device)
-        self._motion_start_times_offset = torch.zeros(self.num_envs).to(self.device)
 
         self._motion_sample_start_idx = 0
         self._sampled_motion_ids = torch.arange(self.num_envs).to(self.device)
@@ -611,38 +609,27 @@ class HumanoidPHC:
             device=self.device,
             fix_height=FixHeightMode.full_fix,
             min_length=self._min_motion_len,
-            # NOTE: this max_length determines the training time, so using 300 for now
-            # TODO: find a way to evaluate full motion, probably not during training
-            max_length=self.max_episode_length,
             im_eval=self.flag_im_eval,
-            num_thread=1,
             smpl_type=self.humanoid_type,
             step_dt=self.dt,
             is_deterministic=self.flag_debug,
         )
-        self._motion_train_lib = MotionLibSMPL(motion_lib_cfg)
+        shapes, limb_weights = self.humanoid_shapes.cpu(), self.humanoid_limb_and_weights
+        self._motion_train_lib = MotionLibSMPL(motion_lib_cfg, self.skeleton_trees[0], shapes, limb_weights)
         self._motion_lib = self._motion_train_lib
 
         # TODO: Use motion_test_file for eval?
-        # A copy: the train lib keeps a reference to motion_lib_cfg, and im_eval turns off its heading augmentation
-        self._motion_eval_lib = MotionLibSMPL(SimpleNamespace(**{**vars(motion_lib_cfg), "im_eval": True}))
+        # Shares the train lib's processed motions. A cfg copy: the train lib keeps a reference to motion_lib_cfg,
+        # and im_eval turns off its heading augmentation
+        self._motion_eval_lib = copy.copy(self._motion_train_lib)
+        self._motion_eval_lib.m_cfg = SimpleNamespace(**{**vars(motion_lib_cfg), "im_eval": True})
 
-        # When loading the motions the first time, use even sampling
-        interval = self.num_unique_motions / (self.num_envs + 50)  # 50 is arbitrary
-        sample_idxes = np.arange(0, self.num_unique_motions, interval)
-        sample_idxes = np.floor(sample_idxes).astype(int)[: self.num_envs]
-        sample_idxes = torch.from_numpy(sample_idxes).to(self.device)
-
-        self._motion_lib.load_motions(
-            skeleton_trees=self.skeleton_trees,
-            gender_betas=self.humanoid_shapes.cpu(),
-            limb_weights=self.humanoid_limb_and_weights.cpu(),
-            # NOTE: During initial loading, use even sampling
-            sample_idxes=sample_idxes,
-            # random_sample=(not self.flag_test) and (not self.seq_motions),
-            # max_len=-1 if self.flag_test else self.max_episode_length,  # NOTE: this is ignored in motion lib
-            # start_idx=self._motion_sample_start_idx,
-        )
+        cfg, M = self.cfg["env"], self.num_unique_motions
+        self.motion_sampler = MotionSampler(M, cfg["motion_sampling"], self.device)
+        target = cfg["start_sampling_target"]
+        self.start_sampler = StartSampler(M, cfg["start_sampling"], self.num_envs, self.device, target=target)
+        self._motion_key_ids = {k: i for i, k in enumerate(self._motion_train_lib._motion_data_keys)}
+        self._motion_lib.load_motions(self.motion_sampler.sample(self.num_envs))
 
     #####################################################################
     ### reset()
@@ -665,8 +652,8 @@ class HumanoidPHC:
         """_reset_envs for the envs where mask is set, as full-batch ops: no host sync. Ref-state init only."""
         assert self._state_init in (StateInit.Random, StateInit.Start) and not self.use_amp_obs
         ids = self._sampled_motion_ids
-        if self._state_init == StateInit.Random and not self.flag_test:
-            times = self._sample_time(ids)
+        if self._state_init == StateInit.Random:
+            times = self._sample_time(ids, mask)
         else:
             times = torch.zeros_like(self._motion_start_times)
         res = self._get_state_from_motionlib_cache(ids, times, self._global_offset)
@@ -677,7 +664,6 @@ class HumanoidPHC:
         self._dof_vel[:] = torch.where(m, res["dof_vel"], self._dof_vel)
         self._global_offset.masked_fill_(m, 0)
         self._motion_start_times[:] = torch.where(mask, times, self._motion_start_times)
-        self._motion_start_times_offset.masked_fill_(mask, 0)
         self.backend.reset_envs(mask)
         for buf in (self.progress_buf, self.reset_buf, self._terminate_buf):
             buf.masked_fill_(mask, 0)
@@ -736,7 +722,6 @@ class HumanoidPHC:
 
         self._global_offset.index_fill_(0, env_ids, 0)  # Reset the global offset when resampling.
         self._motion_start_times[env_ids] = motion_times
-        self._motion_start_times_offset.index_fill_(0, env_ids, 0)  # Reset the motion time offsets
         self._sampled_motion_ids[env_ids] = motion_ids
 
     def _reset_hybrid_state_init(self, env_ids):
@@ -809,10 +794,10 @@ class HumanoidPHC:
             self.dof_subset,
         )
 
-    def _sample_time(self, motion_ids):
-        # Motion imitation, no more blending and only sample at certain locations
-        return self._motion_lib.sample_time_interval(motion_ids)
-        # return self._motion_lib.sample_time(motion_ids)
+    def _sample_time(self, motion_ids, mask=None):
+        if self.flag_test:
+            return torch.zeros_like(motion_ids, dtype=torch.float)
+        return self.start_sampler.start_times(self._motion_lib, motion_ids, mask)
 
     def _sample_ref_state(self, env_ids):
         num_envs = env_ids.shape[0]
@@ -823,9 +808,6 @@ class HumanoidPHC:
             motion_times = torch.zeros(num_envs, device=self.device)
         else:
             raise ValueError("Unsupported state initialization strategy: {:s}".format(str(self._state_init)))
-
-        if self.flag_test:
-            motion_times[:] = 0
 
         motion_res = self._get_state_from_motionlib_cache(
             self._sampled_motion_ids[env_ids], motion_times, self._global_offset[env_ids]
@@ -968,11 +950,8 @@ class HumanoidPHC:
             self._has_limb_weight_obs,  # Constant: False
         )
 
-        motion_times = (
-            (self.progress_buf[env_ids] + 1) * self.dt
-            + self._motion_start_times[env_ids]
-            + self._motion_start_times_offset[env_ids]
-        )  # Next frame, so +1
+        # Next frame, so +1
+        motion_times = (self.progress_buf[env_ids] + 1) * self.dt + self._motion_start_times[env_ids]
 
         motion_res = self._get_state_from_motionlib_cache(
             self._sampled_motion_ids[env_ids], motion_times, self._global_offset[env_ids]
@@ -1012,11 +991,8 @@ class HumanoidPHC:
             body_vel = self._rigid_body_vel[env_ids]
             body_ang_vel = self._rigid_body_ang_vel[env_ids]
 
-        motion_times = (
-            (self.progress_buf[env_ids] + 1) * self.dt
-            + self._motion_start_times[env_ids]
-            + self._motion_start_times_offset[env_ids]
-        )  # Next frame, so +1
+        # Next frame, so +1
+        motion_times = (self.progress_buf[env_ids] + 1) * self.dt + self._motion_start_times[env_ids]
 
         motion_res = self._get_state_from_motionlib_cache(
             self._sampled_motion_ids[env_ids], motion_times, self._global_offset[env_ids]
@@ -1251,10 +1227,10 @@ class HumanoidPHC:
             self.reward_raw[:, -1] = power_reward
 
     def _compute_reset(self, motion_res):
-        time = (
-            (self.progress_buf) * self.dt + self._motion_start_times + self._motion_start_times_offset
-        )  # Reset is also called after the progress_buf is updated.
-        pass_time = time >= self._motion_lib._motion_lengths
+        # Reset is also called after the progress_buf is updated.
+        time = self.progress_buf * self.dt + self._motion_start_times
+        # Reaching the step cap is a truncation, not a failure
+        pass_time = (time >= self._motion_lib._motion_lengths) | (self.progress_buf >= self._step_cap)
 
         body_pos = self._rigid_body_pos[..., self._reset_bodies_id, :].clone()
         ref_body_pos = motion_res["rg_pos"][..., self._reset_bodies_id, :].clone()
@@ -1303,40 +1279,18 @@ class HumanoidPHC:
             self.forward_motion_samples()
 
         else:
-            self._motion_lib.load_motions(
-                skeleton_trees=self.skeleton_trees,
-                limb_weights=self.humanoid_limb_and_weights.cpu(),
-                gender_betas=self.humanoid_shapes.cpu(),
-                random_sample=(not self.flag_test) and (not self.seq_motions),
-                # max_len=-1 if self.flag_test else self.max_episode_length,  # NOTE: this is ignored in motion lib
-            )
+            self._motion_lib.load_motions(self.motion_sampler.sample(self.num_envs))
 
-            time = self.progress_buf * self.dt + self._motion_start_times + self._motion_start_times_offset
+            time = self.progress_buf * self.dt + self._motion_start_times
             root_res = self._motion_lib.get_root_pos_smpl(self._sampled_motion_ids, time)
             self._global_offset[:, :2] = self._humanoid_root_states[:, :2] - root_res["root_pos"][:, :2]
             self.reset()
 
-    def begin_seq_motion_samples(self):
-        # For evaluation
-        self._motion_sample_start_idx = 0
-        self._motion_lib.load_motions(
-            skeleton_trees=self.skeleton_trees,
-            gender_betas=self.humanoid_shapes.cpu(),
-            limb_weights=self.humanoid_limb_and_weights.cpu(),
-            random_sample=False,
-            start_idx=self._motion_sample_start_idx,
-        )
-        self.reset()
-
-    def forward_motion_samples(self):
-        self._motion_sample_start_idx += self.num_envs
-        self._motion_lib.load_motions(
-            skeleton_trees=self.skeleton_trees,
-            gender_betas=self.humanoid_shapes.cpu(),
-            limb_weights=self.humanoid_limb_and_weights.cpu(),
-            random_sample=False,
-            start_idx=self._motion_sample_start_idx,
-        )
+    def forward_motion_samples(self, first=False):
+        """For evaluation: load the next (or with first, the first) num_envs motions in order."""
+        self._motion_sample_start_idx = 0 if first else self._motion_sample_start_idx + self.num_envs
+        ids = torch.arange(self.num_envs, device=self.device) + self._motion_sample_start_idx
+        self._motion_lib.load_motions(ids % self.num_unique_motions)
         self.reset()
 
     @property
@@ -1356,7 +1310,7 @@ class HumanoidPHC:
         return self._motion_lib._motion_data_keys
 
     def get_motion_steps(self):
-        return self._motion_lib.get_motion_num_steps()
+        return self._motion_lib.get_motion_num_steps().clamp(max=self._step_cap)
 
     #####################################################################
     ### Toggle train/eval model. Used in the training/eval code
@@ -1367,9 +1321,10 @@ class HumanoidPHC:
 
         # Relax the early termination condition for evaluation
         self.set_termination_distances(0.5)  # NOTE: hardcoded
+        self._step_cap = 1200  # eval runs each motion from frame 0 to its end or this cap
 
         self._motion_lib = self._motion_eval_lib
-        self.begin_seq_motion_samples()  # using _motion_eval_lib
+        self.forward_motion_samples(first=True)  # using _motion_eval_lib
         if len(self._reset_bodies_id) > 15:
             # Following UHC. Only do it for full body, not for three point/two point trackings.
             self._reset_bodies_id = self._eval_track_bodies_id
@@ -1382,16 +1337,10 @@ class HumanoidPHC:
         self.flag_im_eval = False
 
         self.set_termination_distances(self._termination_distances_backup)
+        self._step_cap = self.max_episode_length
         self._motion_lib = self._motion_train_lib
         self._reset_bodies_id = self._reset_bodies_id_backup
-
-        if self.auto_pmcp:
-            self._motion_lib.update_hard_sampling_weight(failed_keys)
-        elif self.auto_pmcp_soft:
-            self._motion_lib.update_soft_sampling_weight(failed_keys)
-
-        # Return the motion lib termination history
-        return self._motion_lib._termination_history.clone()
+        self.motion_sampler.record_eval([self._motion_key_ids[k] for k in failed_keys])
 
 
 #####################################################################

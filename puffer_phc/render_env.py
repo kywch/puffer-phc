@@ -45,6 +45,7 @@ class HumanoidRenderEnv(HumanoidPHC):
 
         # Reset the init state to the start of the motion
         cfg["env"]["state_init"] = "Start"
+        cfg["env"]["motion_sampling"] = cfg["env"]["start_sampling"] = "uniform"
 
         super().__init__(cfg, device_type, device_id, headless)
 
@@ -415,9 +416,7 @@ class HumanoidRenderEnv(HumanoidPHC):
         self._marker_pos[:] = 1000
 
         if self.flag_show_traj:
-            motion_times = (
-                (self.progress_buf + 1) * self.dt + self._motion_start_times + self._motion_start_times_offset
-            )  # + 1 for target.
+            motion_times = (self.progress_buf + 1) * self.dt + self._motion_start_times  # + 1 for target.
             motion_res = self._get_state_from_motionlib_cache(
                 self._sampled_motion_ids, motion_times, self._global_offset
             )
