@@ -78,7 +78,7 @@ pixi run -e default test
 pixi run -e isaacgym test
 ```
 
-Any `[section] key` in `config.ini` can be overridden as `--section.key-name`. Add `--track` to log locally to Aim under `experiments/.aim`; view with `pixi run aim up --repo experiments --host 127.0.0.1 --port 43800`. Merge runs from another machine: `pixi run aim runs --repo <other>/experiments cp --destination experiments <run_hash>`. `--mode sweep` requires `--tag <name>` (every trial is tracked and tagged); filter in the Aim UI/search with `"<name>" in run.tags`.
+Any `[section] key` in `config.ini` can be overridden as `--section.key-name`. `[env.<backend>]` (e.g. `[env.isaacgym]`) overrides `[env]` keys for that backend; CLI flags still win. Add `--track` to log locally to Aim under `experiments/.aim`; view with `pixi run aim up --repo experiments --host 127.0.0.1 --port 43800`. Merge runs from another machine: `pixi run aim runs --repo <other>/experiments cp --destination experiments <run_hash>`. `--mode sweep` requires `--tag <name>` (every trial is tracked and tagged); filter in the Aim UI/search with `"<name>" in run.tags`.
 
 `--mode play` opens an Isaac Gym viewer and needs X11; it has not been set up here. On the mujoco backends, `--mode play` instead opens a Newton ViewerGL window (see `puffer_phc/backend/_newton_mujoco.py`); it also needs a display.
 

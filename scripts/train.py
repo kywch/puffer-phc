@@ -577,8 +577,14 @@ if __name__ == "__main__":
 
     p = configparser.ConfigParser()
     p.read(args.config)
+    # [env.<backend>] overrides [env] for that backend, e.g. the gym-tuned PD/power values for isaacgym
+    backend_section = f"env.{_peek_backend(sys.argv[1:])}"
+    if p.has_section(backend_section):
+        p["env"].update(p[backend_section])
 
     for section in p.sections():
+        if section.startswith("env."):
+            continue
         for key in p[section]:
             if section == "base":
                 argparse_key = f"--{key}".replace("_", "-")
