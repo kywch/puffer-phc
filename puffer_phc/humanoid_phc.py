@@ -578,7 +578,6 @@ class HumanoidPHC:
         self._global_offset = torch.zeros([self.num_envs, 3]).to(self.device)  # pos offset, so dim is 3
         self._motion_start_times = torch.zeros(self.num_envs).to(self.device)
 
-        self._motion_sample_start_idx = 0
         self._sampled_motion_ids = torch.arange(self.num_envs).to(self.device)
 
         self._amp_obs_buf = torch.zeros(

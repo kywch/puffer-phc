@@ -8,7 +8,6 @@ constraint solve per env. Inspect env i through `solvers[i].mj_model` / `solvers
 The Newton state lives on the CPU. The gym tensors are copies on `device`, refreshed after every step.
 """
 
-
 import mujoco
 import newton
 import numpy as np

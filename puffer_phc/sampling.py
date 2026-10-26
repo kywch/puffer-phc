@@ -1,4 +1,4 @@
-"""Motion (clip-level) and start-time (within-clip) sampling. See tmp/sampling/unified_r3.md."""
+"""Motion (clip-level) and start-time (within-clip) sampling."""
 
 import math
 
@@ -70,16 +70,16 @@ class MotionSampler:
         return torch.from_numpy(self.rng.permutation(np.repeat(np.arange(len(cnt)), cnt))).to(self.device)
 
 
-FLOOR, POWER, HORIZON, CAP = 0.05, 1.5, 150, 512
-FRACTIONS = {"sgs": (0.2, 0.3, 0.5), "uniform": (0.2, 0.8, 0.0)}  # probe, uniform, weighted
+FLOOR, POWER, HORIZON, CAP, BINS = 0.05, 1.5, 150, 512, 20
+FRACTIONS = {"sgs": (0.2, 0.5), "uniform": (0.2, 0.0)}  # probe, weighted; the rest is uniform
 
 
 class StartSampler:
     """Episode start frame, by success-rate bins over each motion's frames (SGS). Probes start at frame 0."""
 
-    def __init__(self, num_motions, mode, num_envs, device, bins=20, target=0.5):
-        self.B, self.target, (self.f_probe, _, self.f_weighted) = bins, target, FRACTIONS[mode]
-        self.att = torch.zeros(num_motions, bins, device=device)
+    def __init__(self, num_motions, mode, num_envs, device, target=0.5):
+        self.target, (self.f_probe, self.f_weighted) = target, FRACTIONS[mode]
+        self.att = torch.zeros(num_motions, BINS, device=device)
         self.succ = torch.zeros_like(self.att)
         self.bin = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.probe = torch.zeros(num_envs, dtype=torch.bool, device=device)
@@ -94,7 +94,7 @@ class StartSampler:
 
     def start_times(self, lib, slots, mask=None):
         ids, F = lib._curr_motion_ids[slots], lib._motion_num_frames[slots]
-        edges = torch.arange(self.B + 1, device=F.device) * F[:, None] // self.B
+        edges = torch.arange(BINS + 1, device=F.device) * F[:, None] // BINS
         lo, hi = edges[:, :-1], edges[:, 1:].minimum(F[:, None] - 1)  # the last frame is never a start
         ov = (hi - lo).clamp_min(0)
         p = (self.succ[ids] + 1) / (self.att[ids] + 2)
@@ -113,7 +113,7 @@ class StartSampler:
 
     def record(self, ids, steps, done, terminated):
         """ids: dataset motion id per env. All N envs, no host sync."""
-        cell = ids * self.B + self.bin
+        cell = ids * BINS + self.bin
         self.att.view(-1).index_add_(0, cell, done.float())
         survived = done & (~terminated | (steps >= HORIZON))
         self.succ.view(-1).index_add_(0, cell, survived.float())

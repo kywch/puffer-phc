@@ -52,27 +52,24 @@ from puffer_phc import torch_utils, ROOT_DIR
 from puffer_phc.poselib_skeleton import SkeletonMotion, SkeletonState
 
 
-USE_CACHE = False
-# print("MOVING MOTION DATA TO GPU, USING CACHE:", USE_CACHE)
-
-
 class FixHeightMode(Enum):
     no_fix = 0
     full_fix = 1
     ankle_fix = 2
 
 
-if not USE_CACHE:
-    old_numpy = torch.Tensor.numpy
+old_numpy = torch.Tensor.numpy
 
-    class Patch:
-        def numpy(self):
-            if self.is_cuda:
-                return self.to("cpu").numpy()
-            else:
-                return old_numpy(self)
 
-    torch.Tensor.numpy = Patch.numpy
+class Patch:
+    def numpy(self):
+        if self.is_cuda:
+            return self.to("cpu").numpy()
+        else:
+            return old_numpy(self)
+
+
+torch.Tensor.numpy = Patch.numpy
 
 
 def to_torch(tensor):
@@ -273,11 +270,8 @@ class MotionLibBase:
         self._heading = torch.stack([zero, zero, (yaw / 2).sin(), (yaw / 2).cos()], -1)
         print(f"Loaded {n} motions ({len(uniq)} unique, {len(idx)} frames) in {time.time() - start_time:.1f}s")
 
-    def get_motion_num_steps(self, motion_ids=None):
-        if motion_ids is None:
-            return (self._motion_num_frames * self._sim_fps / self._motion_fps).ceil().int()
-        else:
-            return (self._motion_num_frames[motion_ids] * self._sim_fps / self._motion_fps).ceil().int()
+    def get_motion_num_steps(self):
+        return (self._motion_num_frames * self._sim_fps / self._motion_fps).ceil().int()
 
     def get_motion_state(self, motion_ids, motion_times, offset=None):
         motion_len = self._motion_lengths[motion_ids]
@@ -285,7 +279,6 @@ class MotionLibBase:
         dt = self._motion_dt[motion_ids]
 
         frame_idx0, frame_idx1, blend = self._calc_frame_blend(motion_times, motion_len, num_frames, dt)
-        # print("non_interval", frame_idx0, frame_idx1)
         f0l = frame_idx0 + self.length_starts[motion_ids]
         f1l = frame_idx1 + self.length_starts[motion_ids]
 
@@ -334,7 +327,7 @@ class MotionLibBase:
 
         # dof_pos drops the root, so the local rotations need no heading
         local_rot = torch_utils.slerp(local_rot0, local_rot1, torch.unsqueeze(blend, axis=-1))
-        dof_pos = self._local_rotation_to_dof_smpl(local_rot)
+        dof_pos = torch_utils.quat_to_exp_map(local_rot[:, 1:]).reshape(local_rot.shape[0], -1)
 
         rb_rot0 = self.grs[f0l]
         rb_rot1 = self.grs[f1l]
@@ -361,7 +354,6 @@ class MotionLibBase:
         dt = self._motion_dt[motion_ids]
 
         frame_idx0, frame_idx1, blend = self._calc_frame_blend(motion_times, motion_len, num_frames, dt)
-        # print("non_interval", frame_idx0, frame_idx1)
         f0l = frame_idx0 + self.length_starts[motion_ids]
         f1l = frame_idx1 + self.length_starts[motion_ids]
 
@@ -390,11 +382,6 @@ class MotionLibBase:
         blend = torch.clip((time - frame_idx0 * dt) / dt, 0.0, 1.0)  # clip blend to be within 0 and 1
 
         return frame_idx0, frame_idx1, blend
-
-    def _local_rotation_to_dof_smpl(self, local_rot):
-        B, J, _ = local_rot.shape
-        dof_pos = torch_utils.quat_to_exp_map(local_rot[:, 1:])
-        return dof_pos.reshape(B, -1)
 
 
 class MotionLibSMPL(MotionLibBase):

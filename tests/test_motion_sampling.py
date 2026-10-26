@@ -1,4 +1,4 @@
-"""CPU checks for puffer_phc/sampling.py (port of tmp/sampling/sim_r3.py tests) and its HumanoidPHC hooks."""
+"""CPU checks for puffer_phc/sampling.py and its HumanoidPHC hooks."""
 
 from types import SimpleNamespace
 
