@@ -628,7 +628,8 @@ if __name__ == "__main__":
         sweep_carbs(args, sweep_count=500)
         sys.exit(0)
 
-    # Create the env and policy
+    # Create the env and policy (seeded first, so motion sampling and initial weights are reproducible)
+    clean_pufferl.seed_everything(args["train"]["seed"], args["train"]["torch_deterministic"])
     vec_env = pufferlib.vector.make(env_creator, env_kwargs=args["env"])
     policy_cls = getattr(policy_module, args["policy_name"])
     rnn_cls = None
