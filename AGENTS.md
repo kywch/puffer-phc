@@ -41,6 +41,8 @@ pixi run -e isaacgym test_deps
 
 The devcontainer cannot see `/windows`. Copy any other datasets into `data/`.
 
+Processed motion libraries are cached in `<motion_file>.motion_cache/` (gitignored). The cache rebuilds automatically when the motion file or the processing code changes; delete the directory to force a rebuild. Details in `docs/optimization.md` (section 3.5).
+
 The `smpl/SMPL_*.pkl` files were re-saved without chumpy (numpy `shapedirs`) so they load on Python 3.12. On other machines, run `uv run smpl/strip_chumpy.py` from the repo root before using the `default` env (chumpy fails on Python >= 3.11; `pixi run -e isaacgym python smpl/strip_chumpy.py` also works).
 
 ## Commands
