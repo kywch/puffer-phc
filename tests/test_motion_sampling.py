@@ -172,3 +172,47 @@ def test_heading_at_query_time_matches_baked():
     assert torch.allclose(
         query.get_root_pos_smpl(ids, t)["root_pos"], old.get_root_pos_smpl(ids, t)["root_pos"], atol=1e-5
     )
+
+
+def test_processed_motion_cache(tmp_path, monkeypatch):
+    import joblib
+
+    from puffer_phc import ASSET_DIR, ROOT_DIR, motion_lib
+    from puffer_phc.poselib_skeleton import SkeletonTree
+
+    data = joblib.load(ROOT_DIR / "sample_data/cmu_mocap_05_06.pkl")
+    data["a-second"] = data[next(iter(data))]  # two motions, so key order is observable
+    joblib.dump(data, tmp_path / "m.pkl")
+    fix, tree = motion_lib.FixHeightMode.full_fix, SkeletonTree.from_mjcf(str(ASSET_DIR / "smpl_humanoid.xml"))
+    cfg = SimpleNamespace(
+        motion_file=str(tmp_path / "m.pkl"), device="cpu", fix_height=fix, min_length=5, smpl_type="smpl"
+    )
+    betas = torch.cat([torch.zeros(1, 1), torch.full((1, 16), 0.5)], dim=1)  # nonzero, so bodies are observable
+    build = lambda t=tree: motion_lib.MotionLibSMPL(cfg, t, betas, torch.zeros(1))  # noqa: E731
+    miss = build()
+    with monkeypatch.context() as m:
+        m.setattr(motion_lib.joblib, "load", None)  # a hit must not read the pkl
+        hit = build()
+    for a, b in [(miss._host[k], hit._host[k]) for k in miss._host] + [(miss._bodies, hit._bodies)]:
+        assert a.dtype == b.dtype and torch.equal(a, b)
+    for k in ("_frames", "_fps", "_starts", "_motion_data_keys"):
+        a, b = getattr(miss, k), getattr(hit, k)
+        assert a.dtype == b.dtype and (a == b).all()
+    assert list(miss._host) == list(hit._host) and miss._num_unique_motions == hit._num_unique_motions
+
+    old = list(tmp_path.glob("*/*.lib.pt"))
+    cfg.min_length = 6
+    build()
+    new = list(tmp_path.glob("*/*.lib.pt"))
+    assert len(old) == len(new) == 1 and old != new
+    old = new
+    tree2 = SkeletonTree(tree.node_names, tree.parent_indices, tree.local_translation * 1.01)
+    build(tree2)
+    new = list(tmp_path.glob("*/*.lib.pt"))
+    assert len(new) == 1 and new != old  # skeleton is part of the key
+    new[0].write_bytes(b"corrupt")
+    build(tree2)  # a corrupt library is rebuilt, not fatal
+    assert new[0].stat().st_size > 7
+    monkeypatch.setattr(motion_lib, "_SOURCE", b"changed")
+    build()
+    assert len([p for p in tmp_path.glob("*.motion_cache/*") if p.is_dir()]) == 2  # source change also re-keys the height curves

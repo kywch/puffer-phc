@@ -44,6 +44,7 @@ import joblib
 import numpy as np
 
 import torch
+from tqdm import tqdm
 
 from smpl_sim.smpllib.smpl_parser import SMPL_Parser
 
@@ -81,8 +82,10 @@ def to_torch(tensor):
         return torch.from_numpy(tensor)
 
 
-# Bump to invalidate every cached height curve after a processing change.
-_MOTION_CACHE_VERSION = 2
+# Any change to the processing code invalidates every cache key.
+_SOURCE = b"".join(
+    (Path(__file__).parent / f).read_bytes() for f in ("motion_lib.py", "poselib_skeleton.py", "torch_utils.py")
+)
 
 
 def _motion_cache_dir(motion_file, fix_height, smpl_type, gender, betas):
@@ -91,7 +94,7 @@ def _motion_cache_dir(motion_file, fix_height, smpl_type, gender, betas):
     smpl_stat = (osp.getmtime(smpl_file), osp.getsize(smpl_file)) if osp.isfile(smpl_file) else None
     raw = repr(
         (
-            _MOTION_CACHE_VERSION,
+            hashlib.sha1(_SOURCE).hexdigest(),
             motion_file,
             osp.getmtime(motion_file),
             osp.getsize(motion_file),
@@ -123,6 +126,9 @@ def compute_motion_dof_vels_jit(local_rotation, fps):
     return torch.cat([dof_vel, dof_vel[-1:]], dim=0)
 
 
+_FK_CHUNK_FRAMES = 100_000
+
+
 def _batched_fk(motion_data_list, skeleton_tree):
     # FK is per-frame independent, so batch over all motions; velocity/dof_vels are per motion.
     n = len(motion_data_list)
@@ -131,10 +137,13 @@ def _batched_fk(motion_data_list, skeleton_tree):
     fps_list = [d.get("fps", 30) for d in motion_data_list]
     counts = [t.shape[0] for t in trans_list]
 
-    big_state = SkeletonState.from_rotation_and_root_translation(
-        skeleton_tree, torch.cat(pose_quat_list, dim=0), torch.cat(trans_list, dim=0), is_local=False
-    )
-    big_gts, big_grs, big_lrs = big_state.global_translation, big_state.global_rotation, big_state.local_rotation
+    rot, trans, outs = torch.cat(pose_quat_list), torch.cat(trans_list), []
+    for i in tqdm(range(0, len(rot), _FK_CHUNK_FRAMES), desc="FK", unit="chunk"):  # chunked only for progress
+        st = SkeletonState.from_rotation_and_root_translation(
+            skeleton_tree, rot[i : i + _FK_CHUNK_FRAMES], trans[i : i + _FK_CHUNK_FRAMES], is_local=False
+        )
+        outs.append((st.global_translation, st.global_rotation, st.local_rotation))
+    big_gts, big_grs, big_lrs = (torch.cat(x) for x in zip(*outs))
 
     gts_l, grs_l, lrs_l, offset = [], [], [], 0
     for f in range(n):
@@ -158,23 +167,57 @@ class MotionLibBase:
         self.m_cfg = cfg = motion_lib_cfg
         self._sim_fps = 1 / getattr(cfg, "step_dt", 1 / 30)  # CHECK ME: hardcoded
         self._device = cfg.device
+        self._motion_limb_weights = limb_weights.float().to(self._device)  # per env
         start_time = time.time()
 
-        data = joblib.load(cfg.motion_file)
-        data = {k: v for k, v in data.items() if len(v["pose_quat_global"]) >= cfg.min_length}
-        motions = list(data.values())
-        self._motion_data_keys = np.array(list(data.keys()))
-        self._num_unique_motions = M = len(motions)
-        self._motion_limb_weights = limb_weights.float().to(self._device)  # per env
-
-        # Cache only the height curve (the expensive step); FK/velocity/dof_vels are cheap, so recomputed every run.
         gender, betas = int(gender_betas[0, 0].item()), gender_betas[0, 1:].tolist()
         cache_dir = _motion_cache_dir(cfg.motion_file, cfg.fix_height, cfg.smpl_type, gender, betas)
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
         except OSError:  # e.g. read-only dataset dir: run without a cache
             cache_dir = None
-        cache_paths = [_motion_cache_path(cache_dir, k) if cache_dir else None for k in self._motion_data_keys]
+        # The processed library also depends on min_length and the skeleton (as parsed from the MJCF).
+        tree = (
+            skeleton_tree.node_names,
+            skeleton_tree.parent_indices.tolist(),
+            skeleton_tree.local_translation.tolist(),
+        )
+        raw = repr((cfg.min_length, tree)).encode()
+        lib_path = cache_dir and cache_dir.with_name(f"{cache_dir.name}-{hashlib.sha1(raw).hexdigest()[:16]}.lib.pt")
+        state = None
+        if lib_path:
+            try:  # MAP_PRIVATE: writes never reach the file; a concurrent unlink after open is harmless
+                state = torch.load(lib_path, mmap=True, weights_only=True)
+                print(f"Motion cache hit: {lib_path}", flush=True)
+            except (FileNotFoundError, RuntimeError):  # missing, unlinked mid-load, or corrupt: rebuild
+                pass
+        if state is None:
+            print(f"Motion cache miss: processing {cfg.motion_file}", flush=True)
+            state = self._process(cfg, skeleton_tree, gender_betas, cache_dir, start_time)
+            if lib_path:
+                tmp_path = lib_path.with_suffix(f".{os.getpid()}.tmp")
+                try:
+                    torch.save(state, tmp_path)
+                    os.replace(tmp_path, lib_path)
+                    for p in lib_path.parent.glob("*.lib.pt"):  # stale keys of this motion file
+                        if p != lib_path:
+                            p.unlink()
+                except (OSError, RuntimeError):
+                    pass
+        self._host, self._bodies, self._motion_data_keys = state["host"], state["bodies"], np.array(state["keys"])
+        self._frames, self._fps = state["frames"].numpy(), state["fps"].numpy()
+        self._starts = np.concatenate(([0], np.cumsum(self._frames)[:-1]))
+        self._num_unique_motions = M = len(self._frames)
+        print(f"Processed {M} motions, {self._frames.sum()} frames, in {time.time() - start_time:.1f}s", flush=True)
+
+    def _process(self, cfg, skeleton_tree, gender_betas, cache_dir, start_time):
+        data = joblib.load(cfg.motion_file)
+        data = {k: v for k, v in data.items() if len(v["pose_quat_global"]) >= cfg.min_length}
+        motions, M = list(data.values()), len(data)
+        print(f"Loaded {M} motions in {time.time() - start_time:.1f}s", flush=True)
+
+        # Per-motion height curves are cached separately so a processed-library miss reuses them.
+        cache_paths = [_motion_cache_path(cache_dir, k) if cache_dir else None for k in data]
         miss = [i for i in range(M) if cache_paths[i] is None or not cache_paths[i].exists()]
         curves = {}
         if miss:
@@ -190,19 +233,21 @@ class MotionLibBase:
 
         gts_l, grs_l, lrs_l, fps_list, counts = _batched_fk(motions, skeleton_tree)
         gvs_l, gavs_l, dvs_l = [], [], []
-        for i, (gts, grs, lrs, fps) in enumerate(zip(gts_l, grs_l, lrs_l, fps_list)):
+        for i, (gts, grs, lrs, fps) in enumerate(tqdm(zip(gts_l, grs_l, lrs_l, fps_list), total=M, desc="Velocities")):
             fps = int(fps)  # compute_motion_dof_vels_jit is a TorchScript fn typed (Tensor, int)
             gts[..., 2] -= (curves[i] if i in curves else torch.load(cache_paths[i])).min()  # one offset per clip
             gvs_l.append(SkeletonMotion._compute_velocity(gts, 1.0 / fps))
             gavs_l.append(SkeletonMotion._compute_angular_velocity(grs, 1.0 / fps))
             dvs_l.append(compute_motion_dof_vels_jit(lrs, fps))
         store = dict(gts=gts_l, grs=grs_l, lrs=lrs_l, gvs=gvs_l, gavs=gavs_l, dvs=dvs_l)
-        self._host = {k: torch.cat(v).float() for k, v in store.items()}
-        self._frames, self._fps = np.array(counts), np.array(fps_list, dtype=np.float64)
-        self._starts = np.concatenate(([0], np.cumsum(counts)[:-1]))
         has_beta = torch.tensor(["beta" in m for m in motions])
-        self._bodies = gender_betas[:1].float().repeat(M, 1) * has_beta[:, None]
-        print(f"Processed {M} motions, {self._starts[-1] + counts[-1]} frames, in {time.time() - start_time:.1f}s")
+        return dict(
+            host={k: torch.cat(v).float() for k, v in store.items()},
+            frames=torch.tensor(counts),
+            fps=torch.tensor(fps_list, dtype=torch.float64),
+            keys=list(data),
+            bodies=gender_betas[:1].float().repeat(M, 1) * has_beta[:, None],
+        )
 
     def load_motions(self, ids):
         """ids: dataset motion id per env slot (a device tensor). Copies the unique motions' frames to the device."""
@@ -408,7 +453,7 @@ class MotionLibSMPL(MotionLibBase):
         chunk = MotionLibSMPL._HEIGHT_FIX_CHUNK_FRAMES
         heights = []
         with torch.no_grad():
-            for i in range(0, big_pose.shape[0], chunk):
+            for i in tqdm(range(0, big_pose.shape[0], chunk), desc="Height curves", unit="chunk"):
                 pose_c = big_pose[i : i + chunk].to(device)
                 trans_c = big_trans[i : i + chunk].to(device)
                 vertices, joints = mesh_parser.get_joints_verts(
