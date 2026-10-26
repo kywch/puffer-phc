@@ -446,34 +446,12 @@ def sweep_carbs(args, sweep_count=500, max_suggestion_cost=3600):
             )
         )
 
-    # batch_param = sweep_parameters['train']['parameters']['batch_size']
-    # default_batch = (batch_param['max'] - batch_param['min']) // 2
-
-    # minibatch_param = sweep_parameters['train']['parameters']['minibatch_size']
-    # default_minibatch = (minibatch_param['max'] - minibatch_param['min']) // 2
-
-    # env params to sweep
-    # if "env" in sweep_parameters:
-    #     param_spaces.append(
-    #         carbs_param("env", "rew_power_coef", "linear", sweep_parameters, search_center=args["ssc_rew"])
-    #     )
-
     param_spaces += [
         carbs_param("train", "learning_rate", "log", sweep_parameters, search_center=args["ssc_lr"]),
-        # carbs_param("train", "gamma", "logit", sweep_parameters, search_center=0.97),
         carbs_param("train", "gae_lambda", "logit", sweep_parameters, search_center=0.50),
         carbs_param("train", "update_epochs", "linear", sweep_parameters, search_center=3, is_integer=True),
         carbs_param("train", "clip_coef", "logit", sweep_parameters, search_center=0.1),
         carbs_param("train", "vf_coef", "linear", sweep_parameters, search_center=2.0),
-        # carbs_param("train", "vf_clip_coef", "logit", sweep_parameters, search_center=0.2),
-        # carbs_param('train', 'max_grad_norm', 'linear', sweep_parameters, search_center=1.0),
-        # carbs_param('train', 'ent_coef', 'log', sweep_parameters, search_center=0.0001),
-        # carbs_param('train', 'batch_size', 'log', sweep_parameters,
-        #     search_center=default_batch, is_integer=True),
-        # carbs_param('train', 'minibatch_size', 'log', sweep_parameters,
-        #     search_center=default_minibatch, is_integer=True),
-        # carbs_param('train', 'bptt_horizon', 'log', sweep_parameters,
-        #     search_center=8, is_integer=True),
     ]
 
     carbs_params = CARBSParams(

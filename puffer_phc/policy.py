@@ -105,19 +105,6 @@ class PolicyWithDiscriminator(nn.Module):
         disc_logits = self._disc_logits(disc_mlp_out)
         return disc_logits
 
-    # NOTE: Used for network weight regularization
-    # def disc_logit_weights(self):
-    #     return torch.flatten(self._disc_logits.weight)
-
-    # def disc_weights(self):
-    #     weights = []
-    #     for m in self._disc_mlp.modules():
-    #         if isinstance(m, nn.Linear):
-    #             weights.append(torch.flatten(m.weight))
-
-    #     weights.append(torch.flatten(self._disc_logits.weight))
-    #     return weights
-
     def update_obs_rms(self, obs):
         self.obs_norm.update(obs)
 
@@ -253,8 +240,6 @@ class LSTMCriticPolicy(PolicyWithDiscriminator):
 
         # Mean bound loss
         if self.training:
-            # mean_violation = nn.functional.relu(torch.abs(mu) - 1)  # bound hard coded to 1
-            # self.mean_bound_loss = mean_violation.mean()
             self.mean_bound_loss = self.bound_loss(mu)
 
         # NOTE: hidden from LSTM goes to the critic head
@@ -287,13 +272,10 @@ class LSTMActorPolicy(PolicyWithDiscriminator):
             layer_init(nn.Linear(self.input_size, 1024)),
             nn.ReLU(),
             layer_init(nn.Linear(1024, 1024)),
-            # nn.LayerNorm(1024),
             nn.ReLU(),
             layer_init(nn.Linear(1024, 512)),
-            # nn.LayerNorm(512),
             nn.ReLU(),
             layer_init(nn.Linear(512, 256)),
-            # nn.LayerNorm(256),
             nn.ReLU(),
             layer_init(nn.Linear(256, 1), std=0.01),
         )
@@ -314,8 +296,6 @@ class LSTMActorPolicy(PolicyWithDiscriminator):
 
         # Mean bound loss
         if self.training:
-            # mean_violation = nn.functional.relu(torch.abs(mu) - 1)  # bound hard coded to 1
-            # self.mean_bound_loss = mean_violation.mean()
             self.mean_bound_loss = self.bound_loss(mu)
 
         # NOTE: Separate critic network takes input directly

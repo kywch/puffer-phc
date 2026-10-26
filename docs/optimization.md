@@ -187,15 +187,14 @@ around 13-14 items/s. A profiling run with a single unique motion repeated acros
 and the skeleton forward-kinematics/rotation ops (global transform ~4.5 s, local rotation ~2.3 s) dominate.
 **Change** (`motion_lib.py`): process each unique motion once; batch FK across motions in `_FK_CHUNK_FRAMES` chunks;
 run the SMPL height curve on GPU; tqdm bars on a miss. Removed `motion_aa` (unused, misaligned under cropping, missing
-the per-env heading). Two-level disk cache in `{motion_file}.motion_cache/`:
-- Per-motion height curves in `<key>/`.
-- The whole processed library in `<key>-<hash(min_length, skeleton)>.lib.pt` (host tensors, frames, fps, keys),
-  loaded with `torch.load(mmap=True, weights_only=True)`.
+the per-env heading). Disk cache in `{motion_file}.motion_cache/`: the whole processed library in
+`<key>-<hash(min_length, skeleton)>.lib.pt` (host tensors, frames, fps, keys), loaded with
+`torch.load(mmap=True, weights_only=True)`. On a miss the height curves are simply recomputed.
 `<key>` is the sha1 of the `_SOURCE` (`motion_lib.py`, `poselib_skeleton.py`, `torch_utils.py` source) plus the motion
 file's path/mtime/size, `fix_height`, SMPL type, gender, betas and the SMPL model file's path/mtime/size, so editing
 any of those three source files rebuilds once. Writes are atomic (tmp + `os.replace`). A missing, corrupt or
 concurrently unlinked `.lib.pt` triggers a rebuild; a new `.lib.pt` deletes the other `*.lib.pt` of that motion file.
-Old height-curve dirs are not deleted; removing the whole `.motion_cache` dir is always safe. A read-only dir runs
+Removing the whole `.motion_cache` dir is always safe (older builds also left per-motion height-curve subdirs there). A read-only dir runs
 without a cache.
 **Result**, 4096 envs: 129-motion file ~4 min -> 4.9 s cold, 4.5 s warm; all-distinct-motions cold throughput 13.7 ->
 120 motions/s (commit message; re-verified by diffing the old and new motion-lib output tensors, matching within

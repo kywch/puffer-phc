@@ -222,8 +222,6 @@ def train(data):
 
     # Optimizing the policy and value network
     total_minibatches = experience.num_minibatches * config.update_epochs
-    # mean_pg_loss, mean_v_loss, mean_entropy_loss = 0, 0, 0
-    # mean_old_kl, mean_kl, mean_clipfrac = 0, 0, 0
     for epoch in range(config.update_epochs):
         lstm_state = None
         for mb in range(experience.num_minibatches):
@@ -451,10 +449,6 @@ class Profile:
         yield "learn_time", self.learn_time
         yield "train_misc_time", self.train_misc_time
 
-    @property
-    def epoch_time(self):
-        return self.train_time + self.eval_time
-
     def update(self, data, interval_s=1):
         global_step = data.global_step
         if global_step == 0:
@@ -494,7 +488,6 @@ def make_losses():
         explained_variance=0,
         mean_bound_loss=0,
         before_clip_grad_norm=0,
-        # after_clip_grad_norm=0,
         l2_init_reg_loss=0,
     )
 
@@ -567,10 +560,6 @@ class Experience:
             self.amp_obs_replay = torch.zeros(
                 batch_size, amp_obs_size, dtype=obs_dtype, pin_memory=pin, device=device if not pin else "cpu"
             )
-            # self.demo=torch.zeros(batch_size, 358, dtype=obs_dtype,
-            #     pin_memory=pin, device=device if not pin else 'cpu')
-            # self.state=torch.zeros(batch_size, 358, dtype=obs_dtype,
-            #     pin_memory=pin, device=device if not pin else 'cpu')
 
             self.amp_obs_replay_filled = False
             self.amp_obs_update_prob = amp_obs_update_prob
@@ -731,7 +720,6 @@ ROUND_OPEN = rich.box.Box("╭──╮\n" "│  │\n" "│  │\n" "│  │\n
 c1 = "[bright_cyan]"
 c2 = "[white]"
 c3 = "[cyan]"
-b1 = "[bright_cyan]"
 b2 = "[bright_white]"
 
 
@@ -761,7 +749,6 @@ def fmt_perf(name, time, uptime):
     return f"{c1}{name}", duration(time), f"{b2}{percent:2d}%"
 
 
-# TODO: Add env name to print_dashboard
 def print_dashboard(env_name, utilization, global_step, epoch, profile, losses, stats, msg, clear=False, max_stats=[0]):
     console = Console()
     if clear:

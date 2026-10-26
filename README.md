@@ -38,11 +38,7 @@ The default path trains on the Newton/MuJoCo backends (Python 3.12, no Isaac Gym
 
 3. Download the SMPL parameters from [SMPL](https://smpl.is.tue.mpg.de/), and unzip them into `smpl` folder. Rename the files `basicmodel_neutral_lbs_10_207_0_v1.1.0`, `basicmodel_m_lbs_10_207_0_v1.1.0.pkl`, `basicmodel_f_lbs_10_207_0_v1.1.0.pkl` to `SMPL_NEUTRAL.pkl`, `SMPL_MALE.pkl` and `SMPL_FEMALE.pkl`.
 
-    The `default` environment's Python 3.12 can't load `chumpy`, so convert the SMPL files' chumpy arrays to numpy once. chumpy needs Python <= 3.10:
-    ```
-    uv run smpl/strip_chumpy.py
-    ```
-    Alternatively, run `pixi run -e isaacgym python smpl/strip_chumpy.py` in the `isaacgym` environment, which has `chumpy`.
+    For the `default` environment, also strip chumpy from the files once: see `smpl/README.md`.
 
 4. Train a policy. `config.ini` defaults to `backend = mujoco_gpu` and `solver_preset = newton_120`:
     ```

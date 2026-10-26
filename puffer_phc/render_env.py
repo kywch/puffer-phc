@@ -2,7 +2,7 @@ import os
 import sys
 import os.path as osp
 import datetime
-from collections import defaultdict, deque
+from collections import defaultdict
 
 from isaacgym import gymapi
 import gymtorch
@@ -87,7 +87,6 @@ class HumanoidRenderEnv(HumanoidPHC):
             elif evt.action == "cancel_video_record" and evt.value > 0:
                 self.recording = False
                 self.recording_state_change = False
-                self._video_queue = deque(maxlen=self.max_video_queue_size)
                 self.state_record.clear()
             elif evt.action == "reset" and evt.value > 0:
                 self.reset()
@@ -224,8 +223,6 @@ class HumanoidRenderEnv(HumanoidPHC):
 
         self.recorder_camera_handle = self.recorder_camera_handles[0]
         self.recording, self.recording_state_change = False, False
-        self.max_video_queue_size = 100000
-        self._video_queue = deque(maxlen=self.max_video_queue_size)
         rendering_out = osp.join("output", "renderings")
         states_out = osp.join("output", "states")
         os.makedirs(rendering_out, exist_ok=True)
@@ -233,7 +230,6 @@ class HumanoidRenderEnv(HumanoidPHC):
         self.cfg_name = self.cfg["exp_name"]
         self._video_path = osp.join(rendering_out, f"{self.cfg_name}-%s.mp4")
         self._states_path = osp.join(states_out, f"{self.cfg_name}-%s.pkl")
-        # self.gym.draw_env_rigid_contacts(self.viewer, self.envs[1], gymapi.Vec3(0.9, 0.3, 0.3), 1.0, True)
 
     def _init_camera(self):
         self.gym.refresh_actor_root_state_tensor(self.sim)

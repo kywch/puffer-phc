@@ -43,7 +43,7 @@ The devcontainer cannot see `/windows`. Copy any other datasets into `data/`.
 
 Processed motion libraries are cached in `<motion_file>.motion_cache/` (gitignored). The cache rebuilds automatically when the motion file or the processing code changes; delete the directory to force a rebuild. Details in `docs/optimization.md` (section 3.5).
 
-The `smpl/SMPL_*.pkl` files were re-saved without chumpy (numpy `shapedirs`) so they load on Python 3.12. On other machines, run `uv run smpl/strip_chumpy.py` from the repo root before using the `default` env (chumpy fails on Python >= 3.11; `pixi run -e isaacgym python smpl/strip_chumpy.py` also works).
+The `smpl/SMPL_*.pkl` files were re-saved without chumpy (numpy `shapedirs`) so they load on Python 3.12. On other machines, run `uv run smpl/strip_chumpy.py` first (see `smpl/README.md`).
 
 ## Commands
 
@@ -98,7 +98,7 @@ The training dashboard is a rich live table (CPU is this process, top-style, 100
 
 ## Reference results
 
-- Smoke test (512 envs, RTX 3090): about 16k steps per second on mujoco_gpu (newton_120) (before perf/train-speed), 10.3k on Isaac Gym.
+- Smoke test (512 envs, RTX 3090): 10.3k steps per second on Isaac Gym.
 - Full config (4096 envs, newton_120, RTX 3090, GPU clock unlocked): ~71.5k SPS with Adam; Muon (the default) is ~8% lower. See `docs/optimization.md`.
 - Power penalty: mujoco's `dof_force` is the applied PD torque, ~5-9x Isaac Gym's. newton_120, 129 motions, eval at epoch 1500: `rew_power_coef` 0.0001 gives success 0.992 / MPJPE 43.5 mm, the gym-tuned 0.0005 gives 0.039. mujoco backends use 0.0001; `[env.isaacgym]` keeps 0.0005.
 - Eval of `ckpt_amass_800m_acc97.pt` on `amass_train_take6_upright.pkl`: success rate 0.992, MPJPE 37.1 mm, PA-MPJPE 20.1 mm.

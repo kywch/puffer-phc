@@ -215,4 +215,5 @@ def test_processed_motion_cache(tmp_path, monkeypatch):
     assert new[0].stat().st_size > 7
     monkeypatch.setattr(motion_lib, "_SOURCE", b"changed")
     build()
-    assert len([p for p in tmp_path.glob("*.motion_cache/*") if p.is_dir()]) == 2  # source change also re-keys the height curves
+    new2 = list(tmp_path.glob("*/*.lib.pt"))
+    assert len(new2) == 1 and new2 != new  # source change re-keys the library

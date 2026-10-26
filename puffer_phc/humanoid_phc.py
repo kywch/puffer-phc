@@ -75,8 +75,6 @@ class HumanoidPHC:
         # NOTE: These are to replace flags.
         self.flag_test = False
         self.flag_im_eval = False
-        self.flag_debug = self.device == "cpu"  # CHECK ME
-
         ### Motion data
         # NOTE: self.flag_im_eval is used in _load_motion
         self._load_motion(self.motion_file)
@@ -225,18 +223,6 @@ class HumanoidPHC:
         self.dof_subset = (
             torch.from_numpy(np.concatenate(disc_idxes)) if len(disc_idxes) > 0 else torch.tensor([]).long()
         )
-        self.left_indexes = [idx for idx, name in enumerate(self._dof_names) if name.startswith("L")]
-        self.left_lower_indexes = [
-            idx
-            for idx, name in enumerate(self._dof_names)
-            if name.startswith("L") and name[2:] in ["Hip", "Knee", "Ankle", "Toe"]
-        ]
-        self.right_indexes = [idx for idx, name in enumerate(self._dof_names) if name.startswith("R")]
-        self.right_lower_indexes = [
-            idx
-            for idx, name in enumerate(self._dof_names)
-            if name.startswith("R") and name[2:] in ["Hip", "Knee", "Ankle", "Toe"]
-        ]
 
         ### Load the Neutral SMPL humanoid asset only
         self.gender_beta = np.zeros(17)  # NOTE: gender (1) + betas (16)
@@ -282,18 +268,12 @@ class HumanoidPHC:
 
         self.env_spacing = env_config.get("env_spacing", 5)
 
-        self.collect_dataset = False  # for offline RL
-
         ### Obs/action-related
         self._local_root_obs = True
         self._root_height_obs = True
-        self.num_states = 0  # cfg["env"].get("numStates", 0)  # Not used for PHC
 
         self.key_bodies = env_config.get("key_bodies", ["R_Ankle", "L_Ankle", "R_Wrist", "L_Wrist"])
         self._key_body_ids = self._build_body_ids_tensor(self.key_bodies)
-
-        contact_bodies = env_config.get("contact_bodies", ["R_Ankle", "L_Ankle", "R_Toe", "L_Toe"])
-        self._contact_body_ids = self._build_body_ids_tensor(contact_bodies)
 
         self._full_track_bodies = self._body_names.copy()
         self._track_bodies = env_config.get("trackBodies", self._full_track_bodies)
@@ -311,8 +291,6 @@ class HumanoidPHC:
         self._eval_track_bodies_id = self._build_body_ids_tensor(self._eval_bodies)
 
         self.add_obs_noise = False
-        self.add_action_noise = False
-        self.action_noise_std = 0.05
 
         ### Control-related
         self.control_mode = "isaac_pd"
@@ -322,10 +300,6 @@ class HumanoidPHC:
 
         ### Motion/AMP-related
         self._min_motion_len = 5  # env_config.get("min_length", -1)
-
-        # NOTE: Some AMASS motion is over 7000 frames, and it substantially
-        # slows down the evaluation. So we limit the max length to 600.
-        self._max_motion_len = 600
 
         state_init = env_config.get("state_init", "Random")
         self._state_init = StateInit[state_init]
@@ -404,8 +378,6 @@ class HumanoidPHC:
 
         self.dof_limits_lower = to_torch(self.dof_limits_lower, device=self.device)
         self.dof_limits_upper = to_torch(self.dof_limits_upper, device=self.device)
-        self.dof_limits = torch.stack([self.dof_limits_lower, self.dof_limits_upper], dim=-1)
-        self.torque_limits = to_torch(dof_prop["effort"], device=self.device)
 
         self._build_pd_action_offset_scale()
 
@@ -429,9 +401,6 @@ class HumanoidPHC:
 
                     lim_low[dof_offset : (dof_offset + dof_size)] = -curr_scale
                     lim_high[dof_offset : (dof_offset + dof_size)] = curr_scale
-
-                    # lim_low[dof_offset:(dof_offset + dof_size)] = -np.pi
-                    # lim_high[dof_offset:(dof_offset + dof_size)] = np.pi
 
                 elif dof_size == 1:
                     curr_low = lim_low[dof_offset]
@@ -535,7 +504,6 @@ class HumanoidPHC:
         self._dof_vel = b.dof_vel
 
         # NOTE: These are used in self._reset_default(), along with self._initial_humanoid_root_states
-        # CHECK ME: Is it ok to use zeros for _initial_dof_pos and _initial_dof_vel?
         self._initial_dof_pos = torch.zeros_like(self._dof_pos, device=self.device, dtype=torch.float)
         self._initial_dof_vel = torch.zeros_like(self._dof_vel, device=self.device, dtype=torch.float)
 
@@ -548,7 +516,6 @@ class HumanoidPHC:
 
     def _setup_env_buffers(self):
         self.obs_buf = torch.zeros((self.num_envs, self.num_obs), device=self.device, dtype=torch.float)
-        # self.self_obs_buf = torch.zeros((self.num_envs, self._num_self_obs), device=self.device, dtype=torch.float)
 
         self.rew_buf = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
         # NOTE: store indiviaul reward components. 4 and 5 are hardcoded for now.
@@ -564,17 +531,9 @@ class HumanoidPHC:
 
         self.extras = {}  # Stores info
 
-        # NOTE: states not used here, but keeping it for now
-        self.states_buf = torch.zeros((self.num_envs, self.num_states), device=self.device, dtype=torch.float)
-
-        # NOTE: related to domain randomization. Not used here.
-        # self.randomize_buf = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
-
         # AMP/Motion-related
         self._reset_default_env_ids = []
         self._reset_ref_env_ids = []
-        self._state_reset_happened = False
-
         self._global_offset = torch.zeros([self.num_envs, 3]).to(self.device)  # pos offset, so dim is 3
         self._motion_start_times = torch.zeros(self.num_envs).to(self.device)
 
@@ -593,14 +552,9 @@ class HumanoidPHC:
         # amp_batch_size is fixed to the number of envs
         self._amp_obs_demo_buf = torch.zeros_like(self._amp_obs_buf)
 
-        # NOTE: These don't seem to be used, except ref_dof_pos when self._res_action is True
-        # self.ref_body_pos = torch.zeros_like(self._rigid_body_pos)
-        # self.ref_body_vel = torch.zeros_like(self._rigid_body_vel)
-        # self.ref_body_rot = torch.zeros_like(self._rigid_body_rot)
-        # self.ref_body_pos_subset = torch.zeros_like(self._rigid_body_pos[:, self._track_bodies_id])
         self.ref_dof_pos = torch.zeros_like(self._dof_pos)
 
-    def _load_motion(self, motion_train_file, motion_test_file=None):
+    def _load_motion(self, motion_train_file):
         motion_lib_cfg = SimpleNamespace(
             motion_file=motion_train_file,
             device=self.device,
@@ -609,13 +563,11 @@ class HumanoidPHC:
             im_eval=self.flag_im_eval,
             smpl_type=self.humanoid_type,
             step_dt=self.dt,
-            is_deterministic=self.flag_debug,
         )
         shapes, limb_weights = self.humanoid_shapes.cpu(), self.humanoid_limb_and_weights
         self._motion_train_lib = MotionLibSMPL(motion_lib_cfg, self.skeleton_trees[0], shapes, limb_weights)
         self._motion_lib = self._motion_train_lib
 
-        # TODO: Use motion_test_file for eval?
         # Shares the train lib's processed motions. A cfg copy: the train lib keeps a reference to motion_lib_cfg,
         # and im_eval turns off its heading augmentation
         self._motion_eval_lib = copy.copy(self._motion_train_lib)
@@ -640,7 +592,6 @@ class HumanoidPHC:
             self._reset_env_tensors(env_ids)
             self.backend.refresh()
             self._compute_observations(env_ids)
-            self._state_reset_happened = True
 
         if self.use_amp_obs:
             self._init_amp_obs(env_ids)
@@ -747,14 +698,9 @@ class HumanoidPHC:
 
         if len(self._reset_default_env_ids) > 0:
             raise NotImplementedError("Not tested yet")
-            # self._init_amp_obs_default(self._reset_default_env_ids)
 
         if len(self._reset_ref_env_ids) > 0:
             self._init_amp_obs_ref(self._reset_ref_env_ids, self._reset_ref_motion_ids, self._reset_ref_motion_times)
-
-    def _init_amp_obs_default(self, env_ids):
-        curr_amp_obs = self._curr_amp_obs_buf[env_ids].unsqueeze(-2)
-        self._hist_amp_obs_buf[env_ids] = curr_amp_obs
 
     def _init_amp_obs_ref(self, env_ids, motion_ids, motion_times):
         motion_ids = torch.tile(motion_ids.unsqueeze(-1), [1, self._num_amp_obs_steps - 1])
@@ -856,11 +802,6 @@ class HumanoidPHC:
             self._rigid_body_vel[env_ids] = rigid_body_vel
             self._rigid_body_ang_vel[env_ids] = rigid_body_ang_vel
 
-            self._reset_rb_pos = self._rigid_body_pos[env_ids].clone()
-            self._reset_rb_rot = self._rigid_body_rot[env_ids].clone()
-            self._reset_rb_vel = self._rigid_body_vel[env_ids].clone()
-            self._reset_rb_ang_vel = self._rigid_body_ang_vel[env_ids].clone()
-
     #####################################################################
     ### compute observations
     #####################################################################
@@ -878,11 +819,6 @@ class HumanoidPHC:
 
         # Possible the original paper only uses imitation
         obs = torch.cat([state, imitation], dim=-1)
-
-        # NOTE: Not using it for now.
-        # This is the normalized vector with position, rotation, velocity, and
-        # angular velocity for the simulated humanoid and the demo data
-        # self.state, self.demo = self._compute_state_obs(env_ids)
 
         if self.add_obs_noise and not self.flag_test:
             obs = obs + torch.randn_like(obs) * 0.1
@@ -1039,10 +975,6 @@ class HumanoidPHC:
         )
 
         if self._res_action and save_buffer:
-            # self.ref_body_pos[env_ids] = ref_rb_pos
-            # self.ref_body_vel[env_ids] = ref_body_vel
-            # self.ref_body_rot[env_ids] = ref_rb_rot
-            # self.ref_body_pos_subset[env_ids] = ref_rb_pos_subset
             self.ref_dof_pos[env_ids] = ref_dof_pos
 
         return obs
@@ -1170,14 +1102,9 @@ class HumanoidPHC:
             motion_res["body_ang_vel"],
         )
 
-        root_pos = body_pos[..., 0, :]
-        root_rot = body_rot[..., 0, :]
-
         # NOTE: self._full_body_reward is True by default
         if self._full_body_reward:
             self.rew_buf[:], self.reward_raw[:, : self._imitation_reward_dim] = compute_imitation_reward(
-                root_pos,
-                root_rot,
                 body_pos,
                 body_rot,
                 body_vel,
@@ -1200,8 +1127,6 @@ class HumanoidPHC:
             ref_body_vel_subset = ref_body_vel[..., self._track_bodies_id, :]
             ref_body_ang_vel_subset = ref_body_ang_vel[..., self._track_bodies_id, :]
             self.rew_buf[:], self.reward_raw[:, : self._imitation_reward_dim] = compute_imitation_reward(
-                root_pos,
-                root_rot,
                 body_pos_subset,
                 body_rot_subset,
                 body_vel_subset,
@@ -1215,7 +1140,6 @@ class HumanoidPHC:
 
         if self.use_power_reward:
             power = torch.abs(torch.multiply(self.dof_force_tensor, self._dof_vel)).sum(dim=-1)
-            # power_reward = -0.00005 * (power ** 2)
             power_reward = -self.power_coefficient * power
             # First 3 frame power reward should not be counted. since they could be dropped.
             power_reward[self.progress_buf <= 3] = 0
@@ -1235,8 +1159,6 @@ class HumanoidPHC:
         self.reset_buf[:], self._terminate_buf[:] = compute_humanoid_im_reset(
             self.reset_buf,
             self.progress_buf,
-            self._contact_forces,
-            self._contact_body_ids,
             body_pos,
             ref_body_pos,
             pass_time,
@@ -1354,7 +1276,6 @@ def remove_base_rot(quat):
     return quat_mul(quat, base_rot.repeat(shape, 1))
 
 
-# @torch.jit.script
 def compute_humanoid_observations_smpl_max(
     body_pos,
     body_rot,
@@ -1604,8 +1525,6 @@ def build_amp_observations_smpl(
 
 @torch.jit.script
 def compute_imitation_reward(
-    root_pos,
-    root_rot,
     body_pos,
     body_rot,
     body_vel,
@@ -1616,7 +1535,7 @@ def compute_imitation_reward(
     ref_body_ang_vel,
     rwd_specs,
 ):
-    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor,Tensor, Tensor, Dict[str, float]) -> Tuple[Tensor, Tensor]
+    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Dict[str, float]) -> Tuple[Tensor, Tensor]
     k_pos, k_rot, k_vel, k_ang_vel = (
         rwd_specs["k_pos"],
         rwd_specs["k_rot"],
@@ -1661,8 +1580,6 @@ def compute_imitation_reward(
 def compute_humanoid_im_reset(
     reset_buf,
     progress_buf,
-    contact_buf,
-    contact_body_ids,
     rigid_body_pos,
     ref_body_pos,
     pass_time,
@@ -1670,7 +1587,7 @@ def compute_humanoid_im_reset(
     termination_distance,
     use_mean,
 ):
-    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, bool, Tensor, bool) -> Tuple[Tensor, Tensor]
+    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, bool, Tensor, bool) -> Tuple[Tensor, Tensor]
     terminated = torch.zeros_like(reset_buf)
     if enable_early_termination:
         # NOTE: When evaluating, using mean is relaxed vs. max is strict.
@@ -1689,10 +1606,6 @@ def compute_humanoid_im_reset(
         has_fallen *= progress_buf > 1
 
         terminated = torch.where(has_fallen, torch.ones_like(reset_buf), terminated)
-
-        # if (contact_buf.abs().sum(dim=-1)[0] > 0).sum() > 2:
-        #     np.set_printoptions(precision=4, suppress=1)
-        #     print(contact_buf.numpy(), contact_buf.abs().sum(dim=-1)[0].nonzero().squeeze())
 
     reset = torch.where(pass_time, torch.ones_like(reset_buf), terminated)
 

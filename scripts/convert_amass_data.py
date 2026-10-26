@@ -92,8 +92,6 @@ if __name__ == "__main__":
         ],
     }
     process_set = amass_splits[process_split]
-    length_acc = []
-
     # The same SMPL neutral model is used for all motions
     beta = np.zeros((16))
     gender_number, gender = [0], "neutral"
@@ -192,7 +190,6 @@ if __name__ == "__main__":
         new_motion_out["fps"] = TARGET_FRAME_RATE
 
         amass_full_motion_dict[key_name_dump] = new_motion_out
-        # print(f"Processed {key_name_dump}")
 
     num_motions = len(amass_full_motion_dict)
     print("Processed", num_motions, "motions, saving to", args.path)
