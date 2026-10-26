@@ -140,10 +140,8 @@ class HumanoidPHC:
             self.extras["amp_obs"] = self.amp_obs  ## ZL: hooks for adding amp_obs for training
 
         if self.flag_im_eval:
-            body_pos = self._rigid_body_pos
-            self.extras["mpjpe"] = (body_pos - motion_res["rg_pos"]).norm(dim=-1).mean(dim=-1)
-            self.extras["body_pos"] = body_pos.cpu().numpy()
-            self.extras["body_pos_gt"] = motion_res["rg_pos"].cpu().numpy()
+            self.extras["body_pos"] = self._rigid_body_pos.clone()  # _reset_masked below overwrites it in place
+            self.extras["body_pos_gt"] = motion_res["rg_pos"]
 
         done = self.reset_buf.clone()
         if not self.flag_test:
@@ -1287,10 +1285,12 @@ class HumanoidPHC:
             self.reset()
 
     def forward_motion_samples(self, first=False):
-        """For evaluation: load the next (or with first, the first) num_envs motions in order."""
+        """For evaluation: load the next (or with first, the first) num_envs motions, shortest first."""
         self._motion_sample_start_idx = 0 if first else self._motion_sample_start_idx + self.num_envs
+        lib = self._motion_lib
+        order = torch.from_numpy(np.argsort(lib._frames / lib._fps, kind="stable")).to(self.device)
         ids = torch.arange(self.num_envs, device=self.device) + self._motion_sample_start_idx
-        self._motion_lib.load_motions(ids % self.num_unique_motions)
+        lib.load_motions(order[ids % self.num_unique_motions])
         self.reset()
 
     @property
