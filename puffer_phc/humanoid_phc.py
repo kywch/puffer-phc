@@ -625,7 +625,7 @@ class HumanoidPHC:
         self._motion_eval_lib.m_cfg = SimpleNamespace(**{**vars(motion_lib_cfg), "im_eval": True})
 
         cfg, M = self.cfg["env"], self.num_unique_motions
-        self.motion_sampler = MotionSampler(M, cfg["motion_sampling"], self.device)
+        self.motion_sampler = MotionSampler(M, cfg["motion_sampling"], self.device, cfg["pmcp_alpha"])
         target = cfg["start_sampling_target"]
         self.start_sampler = StartSampler(M, cfg["start_sampling"], self.num_envs, self.device, target=target)
         self._motion_key_ids = {k: i for i, k in enumerate(self._motion_train_lib._motion_data_keys)}

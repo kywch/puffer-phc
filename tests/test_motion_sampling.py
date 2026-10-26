@@ -7,16 +7,16 @@ import pytest
 import torch
 
 from puffer_phc.humanoid_phc import HumanoidPHC
-from puffer_phc.sampling import ALPHA, MotionSampler, StartSampler, cap_slots, slot_counts
+from puffer_phc.sampling import GAMMA, MotionSampler, StartSampler, cap_slots, slot_counts
 
-N = 4096
+N, ALPHA = 4096, 0.5
 
 
 @pytest.mark.parametrize("M", [1, 2, 7, 20, 21, 100, 1000, 2048, 2049, 4097, 11000])
 def test_slot_counts(M):
     rng, C = np.random.default_rng(M), cap_slots(M, N)
     for h in (np.zeros(M), np.ones(M), rng.random(M) * (rng.random(M) < 0.3), np.r_[1e3, np.zeros(M - 1)]):
-        c = slot_counts(h, np.full(M, -1), rng, N)
+        c = slot_counts(h, np.full(M, -1), rng, N, ALPHA)
         assert c.sum() == N and c.min() >= 0 and c.max() <= C
         if C == -(-N // M):  # small M: exactly uniform for any h
             assert c.max() - c.min() <= 1
@@ -25,35 +25,35 @@ def test_slot_counts(M):
     # every motion loads within ceil(2M/N) loads under adversarial h
     h, last = np.r_[np.full(M // 2, 5.0), np.zeros(M - M // 2)], np.full(M, -1)
     for load in range(-(-M // int(ALPHA * N))):
-        last[slot_counts(h, last, rng, N) > 0] = load
+        last[slot_counts(h, last, rng, N, ALPHA) > 0] = load
     assert (last >= 0).all()
 
 
 def test_slot_counts_no_low_id_bias():
     M, rng = 11000, np.random.default_rng(0)
-    tot = sum(slot_counts(np.ones(M), np.full(M, -1), rng, N) for _ in range(6))
+    tot = sum(slot_counts(np.ones(M), np.full(M, -1), rng, N, ALPHA) for _ in range(6))
     assert abs(tot[:2048].mean() - tot[2048:].mean()) < 0.1 * tot.mean()
 
 
 def test_slot_counts_decay():
     M, rng = 100, np.random.default_rng(1)
-    c = [slot_counts(np.r_[0.5**k, np.zeros(M - 1)], np.full(M, -1), rng, N)[0] for k in range(40)]
+    c = [slot_counts(np.r_[0.5**k, np.zeros(M - 1)], np.full(M, -1), rng, N, ALPHA)[0] for k in range(40)]
     assert all(b <= a + 1 for a, b in zip(c, c[1:])) and c[0] == cap_slots(M, N) and c[-1] <= -(-N // M) + 1
 
 
 def test_motion_sampler():
-    m = MotionSampler(200, "pmcp", "cpu")
+    m = MotionSampler(200, "pmcp", "cpu", ALPHA)
     ids = m.sample(1000)
     assert ids.shape == (1000,) and ids.device.type == "cpu" and m.load_count == 1 and (m.last == 0).all()
     m.record_eval([5])
     m.record_eval([7])
-    assert m.h[5] == 0.5 and m.h[7] == 1 and m.h.sum() == 1.5
+    assert m.h[5] == GAMMA and m.h[7] == 1 and m.h.sum() == 1 + GAMMA
     assert (m.sample(1000) == 7).sum() > (m.sample(1000) == 3).sum() + 5 and m.load_count == 3
     torch.manual_seed(0)
-    u = MotionSampler(200, "uniform", "cpu")
+    u = MotionSampler(200, "uniform", "cpu", ALPHA)
     u.record_eval([7])
     torch.manual_seed(0)
-    assert torch.equal(u.sample(1000), MotionSampler(200, "uniform", "cpu").sample(1000))  # uniform ignores failures
+    assert torch.equal(u.sample(1000), MotionSampler(200, "uniform", "cpu", ALPHA).sample(1000))  # uniform ignores failures
 
 
 def fake_lib(n, M=3):

@@ -5,7 +5,9 @@ import math
 import numpy as np
 import torch
 
-ALPHA, KAPPA, GAMMA, ABS_CAP = 0.5, 16, 0.5, 0.05
+# Per-motion slot cap = max(uniform share, min(ABS_CAP * N, KAPPA * N / M)): 47 slots at M=11313, 204 (ABS_CAP) at M=944.
+# GAMMA: eval-failure history decay, h = GAMMA * h + failed; lower focuses on current failures.
+KAPPA, GAMMA, ABS_CAP = 128, 0.3, 0.05
 
 
 def cap_slots(M, N):
@@ -29,8 +31,8 @@ def alloc_capped(w, budget, room, prio):
     return out
 
 
-def slot_counts(h, last, rng, N):
-    """h: decayed eval failures (>=0). last: last load index (-1 = never). Returns int counts, sum N."""
+def slot_counts(h, last, rng, N, alpha):
+    """h: decayed eval failures (>=0). last: last load index (-1 = never). alpha: coverage fraction. Returns int counts, sum N."""
     M = len(h)
     C = cap_slots(M, N)
     if C == -(-N // M):  # cap == uniform share (M <= 20 at N=4096): exact uniform
@@ -39,7 +41,7 @@ def slot_counts(h, last, rng, N):
         return cnt
     rank = np.empty(M, int)
     rank[np.lexsort((rng.random(M), last))] = np.arange(M)  # LRU first, random ties
-    F = int(ALPHA * N)
+    F = int(alpha * N)
     cov = np.full(M, F // M)
     cov[rank < F % M] += 1  # 1. coverage, round robin
     w = h + 1.0 / M  # 2. uniform pseudomass = one failed motion in total
@@ -47,10 +49,10 @@ def slot_counts(h, last, rng, N):
 
 
 class MotionSampler:
-    """Which dataset motion each env slot holds: half LRU coverage, half eval failures (capped). uniform: h = 0."""
+    """Which dataset motion each env slot holds: alpha LRU coverage, the rest eval failures (capped). uniform: h = 0."""
 
-    def __init__(self, num_motions, mode, device):
-        self.pmcp, self.device = mode == "pmcp", device
+    def __init__(self, num_motions, mode, device, alpha):
+        self.pmcp, self.device, self.alpha = mode == "pmcp", device, alpha
         self.h, self.failed = np.zeros(num_motions), np.zeros(num_motions, bool)
         self.last, self.load_count, self.fail_mass = np.full(num_motions, -1), 0, 0.0
         self.rng = np.random.default_rng(int(torch.randint(2**31, ())))
@@ -61,7 +63,7 @@ class MotionSampler:
         self.h = GAMMA * self.h + self.failed
 
     def sample(self, n):
-        cnt = slot_counts(self.h * self.pmcp, self.last, self.rng, n)
+        cnt = slot_counts(self.h * self.pmcp, self.last, self.rng, n, self.alpha)
         self.last[cnt > 0] = self.load_count
         self.load_count += 1
         self.fail_mass = cnt[self.failed].sum() / n
