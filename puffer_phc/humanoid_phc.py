@@ -72,19 +72,19 @@ class HumanoidPHC:
         self.flag_test = False  # eval mode: see toggle_eval_mode()
         self._load_motion(self.motion_file)
 
-    def reset(self, env_ids=None):
-        safe_reset = (env_ids is None) or len(env_ids) == self.num_envs
-        if env_ids is None:
-            env_ids = self.all_env_ids
-
-        self._reset_envs(env_ids)
+    def reset(self):
+        everyone = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+        self._reset_masked(everyone)
 
         # ZL: This way it will simulate one step, then get reset again, squashing any remaining wiredness. Temporary fix
-        if safe_reset:
-            self.backend.simulate()
-            self._reset_envs(env_ids)
-            torch.cuda.empty_cache()
+        self.backend.simulate()
+        self._reset_masked(everyone)
+        torch.cuda.empty_cache()
 
+        self._reset_ref_motion_times = self._motion_start_times.clone()
+        self._compute_observations()
+        if self.use_amp_obs:
+            self._init_amp_obs(self.all_env_ids)
         return self.obs_buf
 
     def step(self, actions):
@@ -115,6 +115,7 @@ class HumanoidPHC:
         done = self.reset_buf.clone()
         if not self.flag_test:
             self.start_sampler.record(self._motion_lib._curr_motion_ids, self.progress_buf, done, self._terminate_buf)
+        assert not self.use_amp_obs, "the masked reset has no AMP init"
         self._reset_masked(done)
         self._compute_observations()  # observation for the next step, after the reset
 
@@ -358,8 +359,9 @@ class HumanoidPHC:
 
         # AMP/Motion-related
         self._reset_default_env_ids = []
-        self._reset_ref_env_ids = []
         self._motion_start_times = torch.zeros(self.num_envs).to(self.device)
+        # reset() resets every env to its motion's start state: what _init_amp_obs and the tests read
+        self._reset_ref_env_ids = self._reset_ref_motion_ids = self.all_env_ids
 
         self._amp_obs_buf = torch.zeros(
             (self.num_envs, self._num_amp_obs_steps, self._num_amp_obs_per_step),
@@ -404,20 +406,8 @@ class HumanoidPHC:
     ### reset()
     #####################################################################
 
-    def _reset_envs(self, env_ids):
-        self._reset_ref_env_ids = []
-        if len(env_ids) > 0:
-            self._reset_actors(env_ids)  # sets all state vectors
-            self._reset_env_tensors(env_ids)
-            self.backend.refresh()
-            self._compute_observations(env_ids)
-
-        if self.use_amp_obs:
-            self._init_amp_obs(env_ids)
-
     def _reset_masked(self, mask):
-        """_reset_envs for the envs where mask is set, as full-batch ops: no host sync. Ref-state init only."""
-        assert not self.use_amp_obs
+        """Reset the envs where mask is set to their motion's start state, as full-batch ops: no host sync."""
         ids = self.all_env_ids
         if self._state_init == StateInit.Random:
             times = self._sample_time(ids, mask)
@@ -433,36 +423,7 @@ class HumanoidPHC:
         self.backend.reset_envs(mask)
         for buf in (self.progress_buf, self.reset_buf, self._terminate_buf):
             buf.masked_fill_(mask, 0)
-        self.backend.refresh()  # rigid body state of the reset envs comes from the sim's FK
-
-    def _reset_actors(self, env_ids):
-        if self._state_init == StateInit.Random:
-            motion_times = self._sample_time(env_ids)
-        else:
-            motion_times = torch.zeros(env_ids.shape[0], device=self.device)
-
-        res = self._motion_lib.get_motion_state(env_ids, motion_times)
-
-        root = torch.cat([res["root_pos"], res["root_rot"], res["root_vel"], res["root_ang_vel"]], -1)
-        self._humanoid_root_states[env_ids] = root
-        self._dof_pos[env_ids] = res["dof_pos"]
-        self._dof_vel[env_ids] = res["dof_vel"]
-        self._rigid_body_pos[env_ids] = res["rg_pos"]
-        self._rigid_body_rot[env_ids] = res["rb_rot"]
-        self._rigid_body_vel[env_ids] = res["body_vel"]
-        self._rigid_body_ang_vel[env_ids] = res["body_ang_vel"]
-
-        self._reset_ref_env_ids = env_ids
-        self._reset_ref_motion_ids = env_ids
-        self._reset_ref_motion_times = motion_times
-
-        self._motion_start_times[env_ids] = motion_times
-
-    def _reset_env_tensors(self, env_ids):
-        self.backend.reset_envs(torch.zeros_like(self.reset_buf).index_fill_(0, env_ids, True))
-        self.progress_buf.index_fill_(0, env_ids, 0)
-        self.reset_buf.index_fill_(0, env_ids, 0)
-        self._terminate_buf.index_fill_(0, env_ids, 0)
+        self.backend.refresh_reset(mask, res)  # rigid body state of the reset envs comes from the sim's FK
 
     def _init_amp_obs(self, env_ids):
         self._compute_amp_observations(env_ids)
@@ -517,80 +478,44 @@ class HumanoidPHC:
     ### compute observations
     #####################################################################
 
-    def _compute_observations(self, env_ids=slice(None)):
+    def _compute_observations(self):
         # This is the normalized state of the humanoid
-        state = self._compute_humanoid_obs(env_ids)
+        state = self._compute_humanoid_obs()
 
         # This is the difference of state with the demo, but it is
         # called "state" in the paper.
-        imitation = self._compute_task_obs(env_ids)
+        imitation = self._compute_task_obs()
 
         # Possible the original paper only uses imitation
         obs = torch.cat([state, imitation], dim=-1)
-        self.obs_buf[env_ids] = obs
+        self.obs_buf[:] = obs
 
         return obs
 
-    def _compute_humanoid_obs(self, env_ids):
+    def _compute_humanoid_obs(self):
         with torch.no_grad():
             return compute_humanoid_observations_smpl_max(
-                self._rigid_body_pos[env_ids],
-                self._rigid_body_rot[env_ids],
-                self._rigid_body_vel[env_ids],
-                self._rigid_body_ang_vel[env_ids],
+                self._rigid_body_pos,
+                self._rigid_body_rot,
+                self._rigid_body_vel,
+                self._rigid_body_ang_vel,
             )
 
-    # NOTE: This produces "simplified" amp obs, which goes into the discriminator
-    def _compute_state_obs(self, env_ids=None):
-        if env_ids is None:
-            env_ids = slice(None)
-
-        body_pos = self._rigid_body_pos[env_ids]  # [..., self._track_bodies_id]
-        body_rot = self._rigid_body_rot[env_ids]  # [..., self._track_bodies_id]
-        body_vel = self._rigid_body_vel[env_ids]  # [..., self._track_bodies_id]
-        body_ang_vel = self._rigid_body_ang_vel[env_ids]  # [..., self._track_bodies_id]
-
-        sim_obs = compute_humanoid_observations_smpl_max(
-            body_pos,
-            body_rot,
-            body_vel,
-            body_ang_vel,
-        )
-
+    def _compute_task_obs(self):
         # Next frame, so +1
-        motion_times = (self.progress_buf[env_ids] + 1) * self.dt + self._motion_start_times[env_ids]
+        motion_times = (self.progress_buf + 1) * self.dt + self._motion_start_times
 
-        motion_res = self._motion_lib.get_motion_state(self.all_env_ids[env_ids], motion_times)  # pass in the env_ids such that the motion is in synced.
-
-        demo_pos = motion_res["rg_pos"]  # [..., self._track_bodies_id]
-        demo_rot = motion_res["rb_rot"]  # [..., self._track_bodies_id]
-        demo_vel = motion_res["body_vel"]  # [..., self._track_bodies_id]
-        demo_ang_vel = motion_res["body_ang_vel"]  # [..., self._track_bodies_id]
-
-        demo_obs = compute_humanoid_observations_smpl_max(
-            demo_pos,
-            demo_rot,
-            demo_vel,
-            demo_ang_vel,
-        )
-
-        return sim_obs, demo_obs
-
-    def _compute_task_obs(self, env_ids):
-        # Next frame, so +1
-        motion_times = (self.progress_buf[env_ids] + 1) * self.dt + self._motion_start_times[env_ids]
-
-        motion_res = self._motion_lib.get_motion_state(self.all_env_ids[env_ids], motion_times)  # pass in the env_ids such that the motion is in synced.
+        motion_res = self._motion_lib.get_motion_state(self.all_env_ids, motion_times)
 
         self._ref_body_pos = motion_res["rg_pos"]  # HumanoidRenderEnv draws these
-        body_pos = self._rigid_body_pos[env_ids]
+        body_pos = self._rigid_body_pos
         return compute_imitation_observations_v6(
             body_pos[:, 0, :],
-            self._rigid_body_rot[env_ids][:, 0, :],
+            self._rigid_body_rot[:, 0, :],
             body_pos,
-            self._rigid_body_rot[env_ids],
-            self._rigid_body_vel[env_ids],
-            self._rigid_body_ang_vel[env_ids],
+            self._rigid_body_rot,
+            self._rigid_body_vel,
+            self._rigid_body_ang_vel,
             motion_res["rg_pos"],  # ref_rb_pos
             motion_res["rb_rot"],
             motion_res["body_vel"],

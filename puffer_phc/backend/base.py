@@ -40,10 +40,15 @@ class SimBackend(ABC):
     @abstractmethod
     def reset_envs(self, mask):
         """Push the root_states/dof_pos/dof_vel rows (written by the caller) where mask (bool [N]) is set to the sim;
-        PD targets := dof_pos. The caller then calls refresh(), which must leave consistent body state for those rows."""
+        PD targets := dof_pos. The caller then calls refresh_reset(), which must leave consistent body state for those rows."""
 
     @abstractmethod
     def refresh(self): ...
+
+    def refresh_reset(self, mask, ref):
+        """refresh() after reset_envs. ref is the motion-lib state (rg_pos, rb_rot, body_vel, body_ang_vel) the rows
+        where mask is set were reset to, for backends whose refresh() leaves those rows' bodies stale."""
+        self.refresh()
 
     @abstractmethod
     def close(self): ...

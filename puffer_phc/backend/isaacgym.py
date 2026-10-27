@@ -201,19 +201,36 @@ class IsaacGymBackend(SimBackend):
         self.rigid_body_vel = rigid_body_state[..., : self.num_bodies, 7:10]
         self.rigid_body_ang_vel = rigid_body_state[..., : self.num_bodies, 10:13]
 
+        # Rows reset since the last simulate: gym's rigid body state stays stale for them until then, so refresh()
+        # re-applies their reference body state (pos, rot, vel, ang vel)
+        self._body_state = rigid_body_state[:, : self.num_bodies]
+        self._pending = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._ref_body_state = torch.zeros_like(self._body_state)
+
+    _pending = None
+
     def refresh(self):
         self.gym.refresh_dof_state_tensor(self.sim)
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self.gym.refresh_rigid_body_state_tensor(self.sim)
         self.gym.refresh_dof_force_tensor(self.sim)
+        if self._pending is not None:
+            self._body_state[:] = torch.where(self._pending[:, None, None], self._ref_body_state, self._body_state)
+
+    def refresh_reset(self, mask, ref):
+        new = torch.cat([ref["rg_pos"], ref["rb_rot"], ref["body_vel"], ref["body_ang_vel"]], -1)
+        self._ref_body_state[:] = torch.where(mask[:, None, None], new, self._ref_body_state)
+        self._pending |= mask
+        self.refresh()
 
     def simulate(self):
         self.gym.simulate(self.sim)
+        self._pending.zero_()
 
     def step(self, pd_targets):
         self.gym.set_dof_position_target_tensor(self.sim, gymtorch.unwrap_tensor(pd_targets))
         for _ in range(self.control_freq_inv):
-            self.gym.simulate(self.sim)
+            self.simulate()
         self.gym.fetch_results(self.sim, True)
         self.refresh()
 
