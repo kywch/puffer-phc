@@ -40,7 +40,9 @@ class HumanoidRenderEnv(HumanoidPHC):
         offset = torch.as_tensor(offset, device=self.device)
         if self.show_markers:
             pts = (self._ref_body_pos[: len(offset)] + offset[:, None]).reshape(-1, 3).float().cpu().numpy()
-            red = wp.full(len(pts), wp.vec3(1.0, 0.0, 0.0), dtype=wp.vec3, device=viewer.device)  # tuples crash the GL path
+            red = wp.full(
+                len(pts), wp.vec3(1.0, 0.0, 0.0), dtype=wp.vec3, device=viewer.device
+            )  # tuples crash the GL path
             viewer.log_points("ref_markers", wp.array(pts, dtype=wp.vec3, device=viewer.device), 0.05, red)
         else:
             viewer.log_points("ref_markers", None)

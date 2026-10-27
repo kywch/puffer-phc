@@ -25,8 +25,14 @@ def make_env(backend, num_envs, **kwargs):
 
     name, device_type = backend
     e = make(
-        "puffer_phc", motion_file=DATA, has_self_collision=True, num_envs=num_envs,
-        device_type=device_type, headless=True, backend=name, **kwargs,
+        "puffer_phc",
+        motion_file=DATA,
+        has_self_collision=True,
+        num_envs=num_envs,
+        device_type=device_type,
+        headless=True,
+        backend=name,
+        **kwargs,
     )
     e.reset()
     return e
@@ -34,7 +40,9 @@ def make_env(backend, num_envs, **kwargs):
 
 @pytest.fixture(scope="module", params=BACKENDS, ids=lambda p: p[0])
 def env(request):
-    return make_env(request.param, 4, solver_preset="isaacgym_parity_240")  # the gains and dof_force tests need gym gains
+    return make_env(
+        request.param, 4, solver_preset="isaacgym_parity_240"
+    )  # the gains and dof_force tests need gym gains
 
 
 def test_reset_envs_round_trip(env):
@@ -133,7 +141,9 @@ def test_pd_gains_match_xml(env):
     kd = torch.tensor(mjm.dof_damping[6:], dtype=torch.float32)
     gains = b.preset["gains"]
     s = torch.tensor([gains.get(b.body_names[1 + d // 3], 1.0) for d in range(b.num_dof)])
-    ke, kd_model = (wp.to_torch(a).cpu().view(-1, 75)[:, 6:] for a in (b.model.joint_target_ke, b.model.joint_target_kd))
+    ke, kd_model = (
+        wp.to_torch(a).cpu().view(-1, 75)[:, 6:] for a in (b.model.joint_target_ke, b.model.joint_target_kd)
+    )
     assert torch.allclose(ke, s * kp, atol=1e-4)
     assert torch.allclose(kd_model, s * (kd + kp / 120.0), atol=1e-4)
 
@@ -204,10 +214,19 @@ def test_amp_obs(monkeypatch):
     g, ids = e.env, torch.arange(4)
     # right after reset(): the sim's current obs vs the reference at the start time
     ref = g._get_amp_obs(ids, g._motion_start_times)
-    groups = {"root_h": (0, 1), "root_rot": (1, 7), "root_vel": (7, 10), "root_ang_vel": (10, 13),
-              "dof_pos": (13, 127), "dof_vel": (127, 184), "key_pos": (184, 196)}
+    groups = {
+        "root_h": (0, 1),
+        "root_rot": (1, 7),
+        "root_vel": (7, 10),
+        "root_ang_vel": (10, 13),
+        "dof_pos": (13, 127),
+        "dof_vel": (127, 184),
+        "key_pos": (184, 196),
+    }
     diff = {k: (e.amp_obs[:, a:b] - ref[:, a:b]).abs().max().item() for k, (a, b) in groups.items()}
-    assert all(d < (2e-3 if k == "key_pos" else 1e-5) for k, d in diff.items()), diff  # measured: <= 1.1e-6, key_pos 6.4e-4 (FK)
+    assert all(d < (2e-3 if k == "key_pos" else 1e-5) for k, d in diff.items()), (
+        diff
+    )  # measured: <= 1.1e-6, key_pos 6.4e-4 (FK)
     # demo frame k is the reference at t - k*dt (root height read straight from the motion lib; t clear of the clamp)
     with monkeypatch.context() as mp:
         mp.setattr(torch, "randint", lambda *a, **k: ids)

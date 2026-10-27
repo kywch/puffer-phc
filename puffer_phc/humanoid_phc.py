@@ -194,9 +194,9 @@ class HumanoidPHC:
         self.num_bodies = self.backend.num_bodies
         self.num_dof = self.backend.num_dof
 
-        assert self.num_bodies == len(
-            self._body_names
-        ), "Number of bodies in asset file does not match number of SMPL bodies"
+        assert self.num_bodies == len(self._body_names), (
+            "Number of bodies in asset file does not match number of SMPL bodies"
+        )
         assert self.num_dof == len(self._dof_names) * 3, "Number of DOF in asset file does not match number of SMPL DOF"
 
         # Check if the body ids are consistent between the sim asset and self._body_names (SMPL_MUJOCO_NAMES)
@@ -615,7 +615,9 @@ class HumanoidPHC:
     def fetch_amp_obs_demo(self, n):
         """n fresh demo amp obs (index 0 = latest, as in the agent's layout) from random loaded motions"""
         ids = torch.randint(0, self.num_envs, (n,), device=self.device)
-        times = torch.rand(n, device=self.device) * self._motion_lib._motion_lengths[ids]  # early times clamp like the agent's
+        times = (
+            torch.rand(n, device=self.device) * self._motion_lib._motion_lengths[ids]
+        )  # early times clamp like the agent's
         return self._get_amp_obs_hist(ids, times, 0).reshape(n, self.num_amp_obs)
 
     def resample_motions(self):

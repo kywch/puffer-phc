@@ -53,7 +53,9 @@ def test_motion_sampler():
     u = MotionSampler(200, "uniform", "cpu", ALPHA)
     u.record_eval([7])
     torch.manual_seed(0)
-    assert torch.equal(u.sample(1000), MotionSampler(200, "uniform", "cpu", ALPHA).sample(1000))  # uniform ignores failures
+    assert torch.equal(
+        u.sample(1000), MotionSampler(200, "uniform", "cpu", ALPHA).sample(1000)
+    )  # uniform ignores failures
 
 
 def fake_lib(n, M=3):

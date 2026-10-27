@@ -88,6 +88,8 @@ def test_disc_update_and_grad_penalty(wrapped):
     data0, net0 = amp_train_data(wrapped, minibatch=BATCH, penalty=0.0)
     clean_pufferl.train(data0)
     assert not all(torch.equal(g, p.grad) for g, p in zip(grads, net0._disc_mlp.parameters()))  # GP reaches backward
-    x = init.amp_obs_norm(demos[0]).requires_grad_()  # the penalty: 5 * E[|grad_x D(norm(demo))|^2], at the initial weights
+    x = init.amp_obs_norm(
+        demos[0]
+    ).requires_grad_()  # the penalty: 5 * E[|grad_x D(norm(demo))|^2], at the initial weights
     (gx,) = torch.autograd.grad(init._disc_logits(init._disc_mlp(x)).sum(), x)
     assert base - data0.losses.disc_loss == pytest.approx(5 * gx.pow(2).sum(-1).mean().item(), rel=1e-3)
