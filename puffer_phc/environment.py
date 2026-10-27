@@ -1,5 +1,3 @@
-import time
-import argparse
 import functools
 
 from puffer_phc.humanoid_phc import HumanoidPHC
@@ -33,7 +31,10 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         log_interval=32,
         rew_power_coef=0.0005,
         use_amp_obs=False,
-        auto_pmcp_soft=False,
+        motion_sampling="pmcp",
+        pmcp_alpha=0.2,
+        start_sampling="sgs",
+        start_sampling_target=0.5,
         termination_distance=0.25,
         kp_scale=1.0,
         kd_scale=1.0,
@@ -47,7 +48,10 @@ class PHCPufferEnv(pufferlib.PufferEnv):
                 "motion_file": motion_file,
                 "rew_power_coef": rew_power_coef,
                 "use_amp_obs": use_amp_obs,
-                "auto_pmcp_soft": auto_pmcp_soft,
+                "motion_sampling": motion_sampling,
+                "pmcp_alpha": pmcp_alpha,
+                "start_sampling": start_sampling,
+                "start_sampling_target": start_sampling_target,
                 "termination_distance": termination_distance,
                 "kp_scale": kp_scale,
                 "kd_scale": kd_scale,
@@ -104,8 +108,6 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         self.tick = 0
         self.env.reset()
 
-        # self.demo = self.env.demo
-        # self.state = self.env.state
         self.amp_obs = self.env.amp_obs if self.use_amp_obs else None
 
         # Clear the buffers
@@ -128,8 +130,6 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         # obs, reward are put into the buffers; the done envs are reset in place
         done = self.env.step(self.actions)[2]
 
-        # self.demo = self.env.demo
-        # self.state = self.env.state
         self.amp_obs = self.env.amp_obs if self.use_amp_obs else None
 
         rew = self.rewards.clone()
@@ -189,46 +189,16 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         self.env.close()
 
     def mean_and_log(self):
-        # if len(self._infos["episode_return"]) < self.log_interval:
-        #     return []
-
         ret, length, trunc_rate, _ = (self._ep_stats / self._ep_stats[3]).tolist()  # nan if no episode ended
         info = {"episode_return": ret, "episode_length": length, "epi_trunc_rate": trunc_rate}
         self._ep_stats[:] = 0
+        counts = self.env.start_sampler.counts
+        info["sampling/probe_success"] = (counts[1] / counts[0]).item()  # nan if no probe ended
+        info["sampling/pmcp_fail_mass"] = self.env.motion_sampler.fail_mass
+        counts.zero_()
         self.env.backend.warn_overflow()  # once per log interval (= once per epoch at the default config)
 
         return [info]
 
     def fetch_amp_obs_demo(self):
         return self.env.fetch_amp_obs_demo()
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-n", "--num_envs", type=int, default=32)
-    parser.add_argument("-m", "--motion_file", type=str, default="sample_data/cmu_mocap_05_06.pkl")
-    parser.add_argument("--disable_self_collision", action="store_true")
-    args = parser.parse_args()
-
-    def test_perf(env, timeout=10):
-        steps = 0
-        start = time.time()
-        env.reset()
-        actions = env.action_space.sample()
-
-        print("Starting perf test...")
-        while time.time() - start < timeout:
-            env.step(actions)
-            steps += env.num_agents
-
-        end = time.time()
-        sps = int(steps / (end - start))
-        print(f"Steps: {steps}, SPS: {sps}")
-
-    env = PHCPufferEnv(
-        name="puffer_phc",
-        motion_file=args.motion_file,
-        has_self_collision=not args.disable_self_collision,
-        num_envs=args.num_envs,
-    )
-    test_perf(env)

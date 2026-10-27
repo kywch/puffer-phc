@@ -2,7 +2,7 @@ import os
 import sys
 import os.path as osp
 import datetime
-from collections import defaultdict, deque
+from collections import defaultdict
 
 from isaacgym import gymapi
 import gymtorch
@@ -45,6 +45,7 @@ class HumanoidRenderEnv(HumanoidPHC):
 
         # Reset the init state to the start of the motion
         cfg["env"]["state_init"] = "Start"
+        cfg["env"]["motion_sampling"] = cfg["env"]["start_sampling"] = "uniform"
 
         super().__init__(cfg, device_type, device_id, headless)
 
@@ -86,7 +87,6 @@ class HumanoidRenderEnv(HumanoidPHC):
             elif evt.action == "cancel_video_record" and evt.value > 0:
                 self.recording = False
                 self.recording_state_change = False
-                self._video_queue = deque(maxlen=self.max_video_queue_size)
                 self.state_record.clear()
             elif evt.action == "reset" and evt.value > 0:
                 self.reset()
@@ -223,8 +223,6 @@ class HumanoidRenderEnv(HumanoidPHC):
 
         self.recorder_camera_handle = self.recorder_camera_handles[0]
         self.recording, self.recording_state_change = False, False
-        self.max_video_queue_size = 100000
-        self._video_queue = deque(maxlen=self.max_video_queue_size)
         rendering_out = osp.join("output", "renderings")
         states_out = osp.join("output", "states")
         os.makedirs(rendering_out, exist_ok=True)
@@ -232,7 +230,6 @@ class HumanoidRenderEnv(HumanoidPHC):
         self.cfg_name = self.cfg["exp_name"]
         self._video_path = osp.join(rendering_out, f"{self.cfg_name}-%s.mp4")
         self._states_path = osp.join(states_out, f"{self.cfg_name}-%s.pkl")
-        # self.gym.draw_env_rigid_contacts(self.viewer, self.envs[1], gymapi.Vec3(0.9, 0.3, 0.3), 1.0, True)
 
     def _init_camera(self):
         self.gym.refresh_actor_root_state_tensor(self.sim)
@@ -415,9 +412,7 @@ class HumanoidRenderEnv(HumanoidPHC):
         self._marker_pos[:] = 1000
 
         if self.flag_show_traj:
-            motion_times = (
-                (self.progress_buf + 1) * self.dt + self._motion_start_times + self._motion_start_times_offset
-            )  # + 1 for target.
+            motion_times = (self.progress_buf + 1) * self.dt + self._motion_start_times  # + 1 for target.
             motion_res = self._get_state_from_motionlib_cache(
                 self._sampled_motion_ids, motion_times, self._global_offset
             )

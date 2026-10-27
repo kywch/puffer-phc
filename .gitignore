@@ -1,7 +1,6 @@
 # Artifacts
 .pixi/
 experiments/
-output/
 pixi.lock
 eval_summary_*.json
 results_by_motion_*.tsv
@@ -21,10 +20,6 @@ __pycache__/
 *.py[cod]
 *.so
 build/
-dist/
 *.egg-info/
-.eggs/
 .pytest_cache/
 .ruff_cache/
-.ipynb_checkpoints
-.venv

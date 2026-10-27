@@ -176,7 +176,6 @@ class IsaacGymBackend(SimBackend):
         ### get gym GPU state tensors
         actor_root_state = self.gym.acquire_actor_root_state_tensor(self.sim)
         dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)
-        # sensor_tensor = self.gym.acquire_force_sensor_tensor(self.sim)  # Keep this as reference
         rigid_body_state = self.gym.acquire_rigid_body_state_tensor(self.sim)
         contact_force_tensor = self.gym.acquire_net_contact_force_tensor(self.sim)
 

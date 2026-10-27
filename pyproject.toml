@@ -83,41 +83,13 @@ test = "pytest tests -q"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+# torch 2.12 deprecates torch.jit.script, used here and in smpl_sim
+filterwarnings = ["ignore:`torch.jit.script` is deprecated:DeprecationWarning"]
 
 [tool.ruff]
 target-version = "py38"
 line-length = 120
 indent-width = 4
-
-# Exclude a variety of commonly ignored directories.
-exclude = [
-    ".bzr",
-    ".direnv",
-    ".eggs",
-    ".git",
-    ".git-rewrite",
-    ".hg",
-    ".ipynb_checkpoints",
-    ".mypy_cache",
-    ".nox",
-    ".pants.d",
-    ".pyenv",
-    ".pytest_cache",
-    ".pytype",
-    ".ruff_cache",
-    ".svn",
-    ".tox",
-    ".venv",
-    ".vscode",
-    "__pypackages__",
-    "_build",
-    "buck-out",
-    "build",
-    "dist",
-    "node_modules",
-    "site-packages",
-    "venv",
-]
 
 [tool.ruff.lint]
 # Enable Pyflakes (`F`) and a subset of the pycodestyle (`E`)  codes by default.

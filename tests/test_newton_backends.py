@@ -1,5 +1,5 @@
 """Fast checks for the Newton-built backends: mujoco_cpu (MuJoCo C) and mujoco_gpu (mujoco-warp on CUDA).
-Run with `pixi run test`; the mujoco_gpu cases skip without CUDA."""
+Run with `pixi run -e default test`; the mujoco_gpu cases skip without CUDA."""
 
 import os
 

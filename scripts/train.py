@@ -37,8 +37,6 @@ preload_isaacgym(_peek_backend(sys.argv[1:]))
 import torch
 import numpy as np
 
-from smpl_sim.smpllib.smpl_eval import compute_metrics_lite
-
 import pufferlib
 import pufferlib.cleanrl
 import pufferlib.vector
@@ -48,147 +46,144 @@ from puffer_phc.environment import make as env_creator
 import puffer_phc.policy as policy_module
 
 
+METRICS = ("mpjpe_g", "mpjpe_l", "mpjpe_pa", "accel_dist", "vel_dist")  # smpl_sim compute_metrics_lite's keys
+
+
+def p_mpjpe(pred, gt):
+    """Batched torch port of smpl_sim's p_mpjpe (MPJPE after scale, rotation and translation alignment): (B, J)."""
+    mu_x, mu_y = gt.mean(1, keepdim=True), pred.mean(1, keepdim=True)
+    x0, y0 = gt - mu_x, pred - mu_y
+    nx, ny = x0.square().sum((1, 2), keepdim=True).sqrt(), y0.square().sum((1, 2), keepdim=True).sqrt()
+    U, s, Vt = torch.linalg.svd((x0 / nx).transpose(1, 2) @ (y0 / ny))
+    V = Vt.transpose(1, 2)
+    sign = torch.linalg.det(V @ U.transpose(1, 2)).sign()
+    V = torch.cat([V[..., :2], V[..., 2:] * sign[:, None, None]], -1)
+    s = torch.cat([s[:, :2], s[:, 2:] * sign[:, None]], -1)
+    R = V @ U.transpose(1, 2)
+    a = s.sum(1)[:, None, None] * nx / ny
+    return (a * (pred @ R) + (mu_x - a * (mu_y @ R)) - gt).norm(dim=-1)
+
+
+class EvalMetrics:
+    """Per-env sums and frame counts of compute_metrics_lite's errors (m), fed in chunks of frames."""
+
+    def __init__(self, num_envs, device):
+        self.sums = torch.zeros(num_envs, len(METRICS), dtype=torch.float64, device=device)
+        self.counts = torch.zeros(num_envs, len(METRICS), dtype=torch.long, device=device)
+        self.prev = None  # last two (pred, gt) frames, for velocity and acceleration
+        self.t = 0
+
+    def update(self, pred, gt, valid):
+        """pred, gt: (T, num_envs, J, 3); valid: (T, num_envs), the frames compute_metrics_lite gets."""
+        if self.prev is None:
+            self.prev = pred[[0, 0]], gt[[0, 0]]
+        P, G = torch.cat([self.prev[0], pred]), torch.cat([self.prev[1], gt])
+        self.prev = P[-2:], G[-2:]
+        pl, gl = pred - pred[:, :, :1], gt - gt[:, :, :1]
+        err = torch.stack([
+            (gt - pred).norm(dim=-1),
+            (pl - gl).norm(dim=-1),
+            p_mpjpe(pl.flatten(0, 1), gl.flatten(0, 1)).view(pl.shape[:3]),
+            ((P[:-2] - 2 * P[1:-1] + P[2:]) - (G[:-2] - 2 * G[1:-1] + G[2:])).norm(dim=-1),
+            ((P[2:] - P[1:-1]) - (G[2:] - G[1:-1])).norm(dim=-1),
+        ], -1).mean(-2)  # fmt: skip
+        t = torch.arange(self.t, self.t + len(valid), device=valid.device)[:, None]
+        self.t += len(valid)
+        mask = torch.stack([valid, valid, valid, valid & (t >= 2), valid & (t >= 1)], -1)
+        self.sums += torch.where(mask, err.double(), 0).sum(0)
+        self.counts += mask.sum(0)
+
+
+def reduce_metrics(sums, counts):
+    """Frame-weighted means in mm, as np.mean over compute_metrics_lite's concatenated frames."""
+    return dict(zip(METRICS, (sums.sum(0) / counts.sum(0) * 1000).tolist()))
+
+
 class EvalStats:
     def __init__(self, vec_env, failed_save_path=None):
         self.task_env = vec_env.env
         self.num_envs = self.task_env.num_envs
-        device = self.task_env.device
         self.failed_save_path = failed_save_path
 
         # Prep the env for evaluation
         self.num_unique_motions = self.task_env.toggle_eval_mode()
 
-        self.terminate_state = torch.zeros(self.num_envs, dtype=torch.bool, device=device)
-        self.played_steps_buf = torch.zeros(self.num_envs, dtype=torch.short, device=device)
-        self.terminate_memory = []
-        self.motion_length = []
-        self.played_steps = []
-
-        self.mpjpe, self.mpjpe_all = [], []
-        self.gt_pos, self.gt_pos_all = [], []
-        self.pred_pos, self.pred_pos_all = [], []
-        self.curr_steps = 0
+        self.batches = []
         self.success_rate = 0
         self.failed_keys = []
         self.results = None
         self.results_by_motion = None
+        self.new_batch()
 
-        self.pbar = tqdm(range(self.num_unique_motions // self.num_envs))
-        self.pbar.set_description("")
+        self.pbar = tqdm(total=-(-self.num_unique_motions // self.num_envs), desc="Eval batches")
+
+    def new_batch(self):
+        device = self.task_env.device
+        self.curr_steps = 0
+        self.running = torch.ones((), dtype=torch.bool, device=device)
+        self.terminate_state = torch.zeros(self.num_envs, dtype=torch.bool, device=device)
+        self.played_steps_buf = torch.zeros(self.num_envs, dtype=torch.short, device=device)
+        self.metrics = EvalMetrics(self.num_envs, device)
+        self.frames = []
 
     def post_step_eval(self):
-        motion_num_steps = self.task_env.get_motion_steps()
-        next_batch = False
+        """Tracks the batch on the GPU and reads it back every 16 steps. Steps past the batch's end change nothing
+        for the counted envs: none is alive with steps left."""
+        env, t = self.task_env, self.curr_steps
+        motion_num_steps = env.get_motion_steps()
+        info = env.extras
+        n = self.num_unique_motions - env.motion_sample_start_idx  # envs past n repeat earlier motions
 
-        # Eval-related info is stored in the extras
-        info = self.task_env.extras
-
+        # A motion's frames count up to and including the one it terminates on
+        self.frames.append((info["body_pos"], info["body_pos_gt"], ~self.terminate_state & (t < motion_num_steps - 1)))
         # If terminate after the last frame, then it is not a termination. curr_step is one step behind simulation.
-        termination_state = torch.logical_and(self.curr_steps < motion_num_steps, info["terminate"])
-        self.terminate_state = torch.logical_or(termination_state, self.terminate_state, out=self.terminate_state)
-
-        # Record the number of steps played
-        current_envs = torch.logical_and(~self.terminate_state, self.curr_steps < motion_num_steps)
-        if current_envs.any():
-            self.played_steps_buf[current_envs] += 1
-
-        if (~self.terminate_state).sum() > 0:
-            # NOTE: This is to handle when there are more envs than the motions
-            max_possible_id = self.num_unique_motions - 1
-            curr_ids = self.task_env.current_motion_ids
-            if (max_possible_id == curr_ids).sum() > 0:
-                bound = (max_possible_id == curr_ids).nonzero()[0] + 1
-                if (~self.terminate_state[:bound]).sum() > 0:
-                    curr_max = motion_num_steps[:bound][~self.terminate_state[:bound]].max()
-                else:
-                    curr_max = self.curr_steps - 1  # the ones that should be counted have terminated
-                    # The remaining envs are not counted. So set all the remaining envs to terminated
-                    self.terminate_state[bound:] = True
-            else:
-                curr_max = motion_num_steps[~self.terminate_state].max()
-
-            if self.curr_steps >= curr_max:
-                curr_max = self.curr_steps + 1  # For matching up the current steps and max steps.
-        else:
-            curr_max = motion_num_steps.max()
-
-        self.mpjpe.append(info["mpjpe"])
-        self.gt_pos.append(info["body_pos_gt"])
-        self.pred_pos.append(info["body_pos"])
+        self.terminate_state |= (t < motion_num_steps) & info["terminate"]
+        self.played_steps_buf += ~self.terminate_state & (t < motion_num_steps)
+        # The batch ends once no counted env is alive with frames left to play
+        self.running &= (~self.terminate_state[:n] & (motion_num_steps[:n] > t + 1)).any()
         self.curr_steps += 1
 
-        # All motions fully played out, or all envs are terminated
-        if self.curr_steps >= curr_max or self.terminate_state.sum() == self.num_envs:
-            self.curr_steps = 0
-            self.terminate_memory.append(self.terminate_state.cpu().numpy())
-            self.motion_length.append(self.task_env.get_motion_steps().cpu().numpy())
-            self.played_steps.append(self.played_steps_buf.cpu().numpy())
+        if self.curr_steps % 16:
+            return False, False
+        self.metrics.update(*map(torch.stack, zip(*self.frames)))
+        self.frames = []
+        if self.running.item():
+            return False, False
 
-            self.success_rate = 1 - np.concatenate(self.terminate_memory)[: self.num_unique_motions].mean()
+        m = self.metrics
+        cols = env.current_motion_ids, self.terminate_state, motion_num_steps, self.played_steps_buf, m.sums, m.counts
+        self.batches.append([c[:n] for c in cols])
+        self.pbar.update(1)
 
-            # MPJPE
-            all_mpjpe = torch.stack(self.mpjpe)
-            # Max should be the same as the number of frames in the motion.
-            assert all_mpjpe.shape[0] == curr_max or self.terminate_state.sum() == self.num_envs
+        # All motions have been fully evaluated
+        if env.motion_sample_start_idx + self.num_envs >= self.num_unique_motions:
+            return self.get_final_stats(), False
 
-            all_mpjpe = [all_mpjpe[: (i - 1), idx].mean() for idx, i in enumerate(motion_num_steps)]
-            all_body_pos_pred = np.stack(self.pred_pos)
-            all_body_pos_pred = [all_body_pos_pred[: (i - 1), idx] for idx, i in enumerate(motion_num_steps)]
-            all_body_pos_gt = np.stack(self.gt_pos)
-            all_body_pos_gt = [all_body_pos_gt[: (i - 1), idx] for idx, i in enumerate(motion_num_steps)]
-
-            self.mpjpe_all.append(all_mpjpe)
-            self.pred_pos_all += all_body_pos_pred
-            self.gt_pos_all += all_body_pos_gt
-
-            # All motions have been fully evaluated
-            if self.task_env.motion_sample_start_idx + self.num_envs >= self.num_unique_motions:
-                return self.get_final_stats(), next_batch
-
-            # Move on to the next motion
-            next_batch = True
-            self.task_env.forward_motion_samples()
-            self.terminate_state[:] = False
-            self.played_steps_buf[:] = 0
-
-            self.pbar.update(1)
-            self.pbar.refresh()
-            self.mpjpe, self.gt_pos, self.pred_pos = [], [], []
-
-        update_str = f"Terminated: {self.terminate_state.sum().item()} | max frames: {curr_max} | steps {self.curr_steps} | Start: {self.task_env.motion_sample_start_idx} | Succ rate: {self.success_rate:.3f} | Mpjpe: {np.mean(self.mpjpe_all) * 1000:.3f}"
-        self.pbar.set_description(update_str)
-
-        return False, next_batch
+        # Move on to the next motion
+        env.forward_motion_samples()
+        self.new_batch()
+        return False, True
 
     def get_final_stats(self):
         self.pbar.clear()
-        terminate_hist = np.concatenate(self.terminate_memory)
-        succ_idxes = np.flatnonzero(~terminate_hist[: self.num_unique_motions]).tolist()
+        ids, *cols = (torch.cat(c).cpu().numpy() for c in zip(*self.batches))
+        terminated, motion_length, played_steps, sums, counts = (c[np.argsort(ids)] for c in cols)  # dataset order
 
-        pred_pos_all_succ = [(self.pred_pos_all[: self.num_unique_motions])[i] for i in succ_idxes]
-        gt_pos_all_succ = [(self.gt_pos_all[: self.num_unique_motions])[i] for i in succ_idxes]
+        self.success_rate = 1 - terminated.mean()
+        self.failed_keys = self.task_env.motion_data_keys[terminated]
 
-        pred_pos_all = self.pred_pos_all[: self.num_unique_motions]
-        gt_pos_all = self.gt_pos_all[: self.num_unique_motions]
-
-        self.failed_keys = self.task_env.motion_data_keys[terminate_hist[: self.num_unique_motions]]
-        # success_keys = self.task_env.motion_data_keys[~terminate_hist[:self.num_unique_motions]]
-
-        metrics_all = compute_metrics_lite(pred_pos_all, gt_pos_all)
-        metrics_succ = compute_metrics_lite(pred_pos_all_succ, gt_pos_all_succ)
-
-        metrics_all_print = {m: float(np.mean(v)) for m, v in metrics_all.items()}
-        metrics_succ_print = {m: float(np.mean(v)) for m, v in metrics_succ.items()}
-
-        if len(metrics_succ_print) == 0:
+        metrics_all_print = reduce_metrics(sums, counts)
+        if terminated.all():
             print("No success!!!")
             metrics_succ_print = metrics_all_print
+        else:
+            metrics_succ_print = reduce_metrics(sums[~terminated], counts[~terminated])
 
         print("------------------------------------------")
         print(f"Success Rate: {self.success_rate:.10f}")
         print("All: ", " \t".join([f"{k}: {v:.3f}" for k, v in metrics_all_print.items()]))
         print("Succ: ", " \t".join([f"{k}: {v:.3f}" for k, v in metrics_succ_print.items()]))
-        print("Failed keys: ", len(self.failed_keys), ",", self.failed_keys)
+        print(f"Failed: {len(self.failed_keys)} motions (keys in failed_*.pkl)")
 
         self.results = {
             "eval/success_rate": float(self.success_rate),
@@ -203,9 +198,9 @@ class EvalStats:
 
         self.results_by_motion = {
             "motion_keys": self.task_env.motion_data_keys.tolist(),
-            "motion_length": np.concatenate(self.motion_length)[: self.num_unique_motions],
-            "played_steps": np.concatenate(self.played_steps)[: self.num_unique_motions],
-            "success": ~terminate_hist[: self.num_unique_motions],
+            "motion_length": motion_length,
+            "played_steps": played_steps,
+            "success": ~terminated,
         }
 
         return True
@@ -213,19 +208,16 @@ class EvalStats:
     def update_env_and_close(self):
         # NOTE: Assuming that resampling motion will happen right after the eval,
         # so not resetting the env here.
-        termination_history = self.task_env.untoggle_eval_mode(self.failed_keys)
+        self.task_env.untoggle_eval_mode(self.failed_keys)
 
         torch.cuda.empty_cache()
         gc.collect()
 
         if self.failed_save_path:
-            joblib.dump(
-                {
-                    "failed_keys": self.failed_keys,
-                    "termination_history": termination_history,
-                },
-                self.failed_save_path,
-            )
+            env = self.task_env
+            m, s, keys = env.motion_sampler, env.start_sampler, env._motion_train_lib._motion_data_keys
+            joblib.dump(dict(failed_keys=self.failed_keys, motion_keys=keys, h=m.h, last=m.last, load_count=m.load_count,
+                             att=s.att.cpu().numpy(), succ=s.succ.cpu().numpy()), self.failed_save_path)  # fmt: skip
 
         return self.results
 
@@ -273,17 +265,15 @@ def train(args, vec_env, policy, run=None, exp_id=None, skip_resample=False, fin
 
     while data.global_step < train_config.total_timesteps:
         if not skip_resample and data.epoch > 0 and data.epoch % train_config.motion_resample_interval == 0:
-            # Evaluate the model every checkpoint_interval epochs (1500 in config.ini)
-            if data.epoch % train_config.checkpoint_interval == 0:
-                eval_stats = EvalStats(vec_env, failed_save_path=os.path.join(data_dir, f"failed_{data.epoch:06d}.pkl"))
-                rollout(vec_env, policy, eval_stats)
-                eval_results = eval_stats.update_env_and_close()
-                if data.run:
-                    eval_results["0verview/agent_steps"] = data.global_step
-                    eval_results["0verview/epoch"] = data.epoch
-                    clean_pufferl.log_dict(run, eval_results, data.global_step)
+            # Evaluate all motions, then resample with the updated failure weights
+            eval_stats = EvalStats(vec_env, failed_save_path=os.path.join(data_dir, f"failed_{data.epoch:06d}.pkl"))
+            rollout(vec_env, policy, eval_stats)
+            eval_results = eval_stats.update_env_and_close()
+            if data.run:
+                eval_results["0verview/agent_steps"] = data.global_step
+                eval_results["0verview/epoch"] = data.epoch
+                clean_pufferl.log_dict(run, eval_results, data.global_step)
 
-            # Resample motions every motion_resample_interval epochs (500 in config.ini)
             vec_env.env.resample_motions()
 
             # Reset the envs and lstm hidden states
@@ -361,10 +351,10 @@ def rollout(vec_env, policy, eval_stats=None):
                 state[1][:, reset_envs] = 0
 
         # Get episode-related info here
-        if len(info) > 0:
+        if len(info) > 0 and not eval_stats:
             ep_ret = info[0]["episode_return"]
             ep_len = info[0]["episode_length"]
-            print(f"Episode cnt: {vec_env.episode_count - ep_cnt}, Reward: {ep_ret:.3f}, Length: {ep_len:.3f}")
+            print(f" Episode cnt: {vec_env.episode_count - ep_cnt}, Reward: {ep_ret:.3f}, Length: {ep_len:.3f}")
             ep_cnt = vec_env.episode_count
 
         if eval_stats:
@@ -456,34 +446,12 @@ def sweep_carbs(args, sweep_count=500, max_suggestion_cost=3600):
             )
         )
 
-    # batch_param = sweep_parameters['train']['parameters']['batch_size']
-    # default_batch = (batch_param['max'] - batch_param['min']) // 2
-
-    # minibatch_param = sweep_parameters['train']['parameters']['minibatch_size']
-    # default_minibatch = (minibatch_param['max'] - minibatch_param['min']) // 2
-
-    # env params to sweep
-    # if "env" in sweep_parameters:
-    #     param_spaces.append(
-    #         carbs_param("env", "rew_power_coef", "linear", sweep_parameters, search_center=args["ssc_rew"])
-    #     )
-
     param_spaces += [
         carbs_param("train", "learning_rate", "log", sweep_parameters, search_center=args["ssc_lr"]),
-        # carbs_param("train", "gamma", "logit", sweep_parameters, search_center=0.97),
         carbs_param("train", "gae_lambda", "logit", sweep_parameters, search_center=0.50),
         carbs_param("train", "update_epochs", "linear", sweep_parameters, search_center=3, is_integer=True),
         carbs_param("train", "clip_coef", "logit", sweep_parameters, search_center=0.1),
         carbs_param("train", "vf_coef", "linear", sweep_parameters, search_center=2.0),
-        # carbs_param("train", "vf_clip_coef", "logit", sweep_parameters, search_center=0.2),
-        # carbs_param('train', 'max_grad_norm', 'linear', sweep_parameters, search_center=1.0),
-        # carbs_param('train', 'ent_coef', 'log', sweep_parameters, search_center=0.0001),
-        # carbs_param('train', 'batch_size', 'log', sweep_parameters,
-        #     search_center=default_batch, is_integer=True),
-        # carbs_param('train', 'minibatch_size', 'log', sweep_parameters,
-        #     search_center=default_minibatch, is_integer=True),
-        # carbs_param('train', 'bptt_horizon', 'log', sweep_parameters,
-        #     search_center=8, is_integer=True),
     ]
 
     carbs_params = CARBSParams(
@@ -634,7 +602,8 @@ if __name__ == "__main__":
         sweep_carbs(args, sweep_count=500)
         sys.exit(0)
 
-    # Create the env and policy
+    # Create the env and policy (seeded first, so motion sampling and initial weights are reproducible)
+    clean_pufferl.seed_everything(args["train"]["seed"], args["train"]["torch_deterministic"])
     vec_env = pufferlib.vector.make(env_creator, env_kwargs=args["env"])
     policy_cls = getattr(policy_module, args["policy_name"])
     rnn_cls = None

@@ -64,7 +64,7 @@ import pufferlib.vector
 import torch
 
 from puffer_phc.environment import env_creator
-from puffer_phc.motion_lib import MotionLibBase
+from puffer_phc.humanoid_phc import HumanoidPHC
 from puffer_phc.policy import PHCPolicy
 
 
@@ -204,10 +204,10 @@ def main():
     ((preset, n),) = configs
     if args.fixed_reset_times:  # a golden-ratio phase per motion id instead of torch.rand
 
-        def fixed_time(self, ids):
-            return ((ids * 0.618034) % 1 * self._motion_lengths[ids] * 30).floor() / 30
+        def fixed_time(self, ids, mask=None):
+            return ((ids * 0.618034) % 1 * self._motion_lib._motion_lengths[ids] * 30).floor() / 30
 
-        MotionLibBase.sample_time_interval = fixed_time
+        HumanoidPHC._sample_time = fixed_time
     sha = subprocess.run(["git", "describe", "--always", "--dirty"], capture_output=True, text=True).stdout.strip()
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     for seed in (random.seed, np.random.seed, torch.manual_seed):

@@ -55,10 +55,10 @@ constant.
    and torso/spine/chest gains are softened on top of the ankle/toe factor. The ankle/toe 0.2 factor alone is
    best within noise (0.15 → 0.953, 0.2 → 0.946; 0.3 → 0.915, 0.5 → 0.767 success, closed loop) and was not
    compensating for soft contacts — it holds up once contacts are fixed too.
-3. **The eval itself is not deterministic (harness bug, not fixed here).** `motion_lib.py:780` picks a random
-   300-frame window of longer motions whenever `is_deterministic` is False, which is true in eval. Run-to-run
-   spread is about ±0.02 success on MuJoCo (and gym vs MuJoCo comparisons start from different motion windows
-   for those motions). A fix would be e.g. `start = 0 if (config.is_deterministic or config.im_eval) else ...`.
+3. **The eval itself is not bit-deterministic.** The old random 300-frame window of long motions (`is_deterministic`
+   False in eval) is gone from `motion_lib.py`, but `mujoco_gpu` eval still varies run to run: success/MPJPE move
+   within noise between identical evals (the ±0.02 success spread measured earlier included the window).
+   Cause not isolated.
 
 ## Results (closed-loop eval, `ckpt_amass_800m_acc97.pt` on 129 AMASS motions, success / MPJPE mm)
 

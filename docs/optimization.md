@@ -178,27 +178,34 @@ tensor ops, read only at log time; the training loop sends GPU actions without a
 - Dropped motion-lib cache costs one extra `get_motion_state`/step; kept because the net effect was still a large
   win (see section 5 for revisiting this).
 
-### 3.5 Motion loading: dedup, batched FK, GPU height curve, disk cache (`82b9364`)
+### 3.5 Motion loading: dedup, batched FK, GPU height curve, disk cache (`82b9364`, `c8f5663`)
 
 **Problem.** `load_motions` ran the SMPL height fix and FK once per *env slot*, not once per unique motion, on a
 single CPU thread. At 4096 envs with a 129-motion file this took ~4 min, with a 4096-item progress bar stalling
 around 13-14 items/s. A profiling run with a single unique motion repeated across 300 env slots shows where it went:
 ~23 s for 300 redundant `fix_trans_height`/FK calls (~13/s) — batched matrix multiplies (8400 calls, ~4.8 s total)
 and the skeleton forward-kinematics/rotation ops (global transform ~4.5 s, local rotation ~2.3 s) dominate.
-**Change** (`motion_lib.py`): process each unique motion once; batch FK across motions; run the SMPL height curve on
-GPU; cache the per-motion height curve on disk next to the motion file, in `*.motion_cache/`, keyed on the motion
-file's path/mtime/size, the SMPL settings, `max_length`, the SMPL model file (path/mtime/size), and
-`_MOTION_CACHE_VERSION`. Per-env crop and heading draws keep the old RNG order. Removed `motion_aa` (unused,
-misaligned under cropping, missing the per-env heading). `num_thread` stays 1 — Docker `/dev/shm` limits it.
+**Change** (`motion_lib.py`): process each unique motion once; batch FK across motions in `_FK_CHUNK_FRAMES` chunks;
+run the SMPL height curve on GPU; tqdm bars on a miss. Removed `motion_aa` (unused, misaligned under cropping, missing
+the per-env heading). Disk cache in `{motion_file}.motion_cache/`: the whole processed library in
+`<key>-<hash(min_length, skeleton)>.lib.pt` (host tensors, frames, fps, keys), loaded with
+`torch.load(mmap=True, weights_only=True)`. On a miss the height curves are simply recomputed.
+`<key>` is the sha1 of the `_SOURCE` (`motion_lib.py`, `poselib_skeleton.py`, `torch_utils.py` source) plus the motion
+file's path/mtime/size, `fix_height`, SMPL type, gender, betas and the SMPL model file's path/mtime/size, so editing
+any of those three source files rebuilds once. Writes are atomic (tmp + `os.replace`). A missing, corrupt or
+concurrently unlinked `.lib.pt` triggers a rebuild; a new `.lib.pt` deletes the other `*.lib.pt` of that motion file.
+Removing the whole `.motion_cache` dir is always safe (older builds also left per-motion height-curve subdirs there). A read-only dir runs
+without a cache.
 **Result**, 4096 envs: 129-motion file ~4 min -> 4.9 s cold, 4.5 s warm; all-distinct-motions cold throughput 13.7 ->
 120 motions/s (commit message; re-verified by diffing the old and new motion-lib output tensors, matching within
 1.9e-5 on the same device). Also removes a stall that recurs during training: the motion resample every
 `motion_resample_interval=500` epochs took ~270 s against a ~3.6 s/epoch baseline measured on the pre-bf16 loop,
 i.e. roughly 270/(500x3.6+270) ≈ 13% of wall time lost to that one `resample_motions+reset` call every 500 epochs.
+`amass_train_11313_upright` (11313 motions): cold build ~112 s (an earlier miss profiled `joblib.load` ~24 s, FK
+~63 s, velocities ~45 s), cache hit ~0 s for the lib build; peak RSS 26.7 GB -> 10.4 GB (`.lib.pt` is 7.3 GB).
 **Risks/caveats.**
-- Cache correctness depends on the key covering everything the height curve reads; Codex review (3 rounds) added
-  atomic cache writes, handling for read-only cache dirs, and the SMPL model file in the key.
-- `num_thread=1` is unchanged — multi-threaded loading is blocked on the Docker shm limit, not on this change.
+- Cache correctness depends on the key covering everything the processing reads (Codex review added the SMPL model
+  file to the key and the atomic writes).
 
 ### 3.6 Train the policy in bf16, drop host syncs from the PPO loop (`05a3d68`)
 
@@ -295,6 +302,21 @@ that's untested here). The loss is still computed and logged, now with this upda
 **Verification.** pytest 21 passed, 1 skipped; ruff clean. `train.py` smoke runs (512 envs) for PHCPolicy+Recurrent,
 LSTMActorPolicy+Recurrent, LSTMCriticPolicy+Recurrent, PHCPolicy with `bf16=False`/`compile=False`, and PHCPolicy
 with `bound_coef=10` — all pass. Codex review: one finding (fused Adam on CPU), fixed.
+
+### 3.9 Full eval: length-sorted batches, GPU streaming metrics (`e8e7bd7`)
+
+**Problem.** A full eval of the 11313-motion set took 351 s: every batch copied body positions to the host each step
+and ran `smpl_sim`'s `compute_metrics_lite` twice at the end (~1.5 min), and batches mixed short and long motions, so
+each batch ran as long as its longest motion.
+**Change** (`scripts/train.py` `EvalStats`/`EvalMetrics`, `humanoid_phc.py`): eval loads motions shortest first and
+maps results back to dataset order. MPJPE/PA-MPJPE/vel/accel errors accumulate on the GPU per step (batched torch
+`p_mpjpe`, float64 sums), matching `compute_metrics_lite` to `rtol=1e-5` (`tests/test_eval_stats.py`). The
+end-of-batch check reads the host every 16 steps; no per-step logging. A failed motion's frames count only up to its
+termination, so all-motion metrics no longer depend on which motions share a batch (they read lower than before when
+motions fail).
+**Result**, 11313 motions, final 11k checkpoint: eval ~235 s -> ~76 s; standalone eval process 351 s -> 193 s,
+~100 s with the §3.5 cache (estimate, not measured). Success and success-split MPJPE within run-to-run noise. The 1200-step cap bounds the last batch, so refilling finished slots would save only ~22 s
+(not done).
 
 ## 4. Tried and not taken
 
