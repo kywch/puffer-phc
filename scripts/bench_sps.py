@@ -215,6 +215,8 @@ def main():
     device = "cpu" if args.backend == "mujoco_cpu" else "cuda"
     kwargs = dict(motion_file=args.motion_file, has_self_collision=True, num_envs=n, device_type=device)
     kwargs.update(backend=args.backend, headless=True, solver_preset=preset)  # isaacgym ignores the preset
+    if args.backend == "isaacgym":
+        kwargs["rew_power_coef"] = 0.0005  # config.ini [env.isaacgym]
     free0 = torch.cuda.mem_get_info()[0]
     env = pufferlib.vector.make(env_creator(), env_kwargs=kwargs)
     env.async_reset(args.seed)

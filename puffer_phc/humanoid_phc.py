@@ -96,7 +96,7 @@ class HumanoidPHC:
 
         # reward, reset and eval all compare against the reference at this frame
         motion_times = self.progress_buf * self.dt + self._motion_start_times
-        motion_res = self._motion_lib.get_motion_state(self.all_env_ids, motion_times, self._global_offset)
+        motion_res = self._motion_lib.get_motion_state(self.all_env_ids, motion_times)
         self._compute_reward(motion_res)
         self._compute_reset(motion_res)
 
@@ -359,7 +359,6 @@ class HumanoidPHC:
         # AMP/Motion-related
         self._reset_default_env_ids = []
         self._reset_ref_env_ids = []
-        self._global_offset = torch.zeros([self.num_envs, 3]).to(self.device)  # pos offset, so dim is 3
         self._motion_start_times = torch.zeros(self.num_envs).to(self.device)
 
         self._amp_obs_buf = torch.zeros(
@@ -424,13 +423,12 @@ class HumanoidPHC:
             times = self._sample_time(ids, mask)
         else:
             times = torch.zeros_like(self._motion_start_times)
-        res = self._motion_lib.get_motion_state(ids, times, self._global_offset)
+        res = self._motion_lib.get_motion_state(ids, times)
         m = mask[:, None]
         root = torch.cat([res["root_pos"], res["root_rot"], res["root_vel"], res["root_ang_vel"]], -1)
         self._humanoid_root_states[:] = torch.where(m, root, self._humanoid_root_states)
         self._dof_pos[:] = torch.where(m, res["dof_pos"], self._dof_pos)
         self._dof_vel[:] = torch.where(m, res["dof_vel"], self._dof_vel)
-        self._global_offset.masked_fill_(m, 0)
         self._motion_start_times[:] = torch.where(mask, times, self._motion_start_times)
         self.backend.reset_envs(mask)
         for buf in (self.progress_buf, self.reset_buf, self._terminate_buf):
@@ -443,7 +441,7 @@ class HumanoidPHC:
         else:
             motion_times = torch.zeros(env_ids.shape[0], device=self.device)
 
-        res = self._motion_lib.get_motion_state(env_ids, motion_times, self._global_offset[env_ids])
+        res = self._motion_lib.get_motion_state(env_ids, motion_times)
 
         root = torch.cat([res["root_pos"], res["root_rot"], res["root_vel"], res["root_ang_vel"]], -1)
         self._humanoid_root_states[env_ids] = root
@@ -458,7 +456,6 @@ class HumanoidPHC:
         self._reset_ref_motion_ids = env_ids
         self._reset_ref_motion_times = motion_times
 
-        self._global_offset.index_fill_(0, env_ids, 0)  # Reset the global offset when resampling.
         self._motion_start_times[env_ids] = motion_times
 
     def _reset_env_tensors(self, env_ids):
@@ -563,9 +560,7 @@ class HumanoidPHC:
         # Next frame, so +1
         motion_times = (self.progress_buf[env_ids] + 1) * self.dt + self._motion_start_times[env_ids]
 
-        motion_res = self._motion_lib.get_motion_state(
-            self.all_env_ids[env_ids], motion_times, self._global_offset[env_ids]
-        )  # pass in the env_ids such that the motion is in synced.
+        motion_res = self._motion_lib.get_motion_state(self.all_env_ids[env_ids], motion_times)  # pass in the env_ids such that the motion is in synced.
 
         demo_pos = motion_res["rg_pos"]  # [..., self._track_bodies_id]
         demo_rot = motion_res["rb_rot"]  # [..., self._track_bodies_id]
@@ -585,9 +580,7 @@ class HumanoidPHC:
         # Next frame, so +1
         motion_times = (self.progress_buf[env_ids] + 1) * self.dt + self._motion_start_times[env_ids]
 
-        motion_res = self._motion_lib.get_motion_state(
-            self.all_env_ids[env_ids], motion_times, self._global_offset[env_ids]
-        )  # pass in the env_ids such that the motion is in synced.
+        motion_res = self._motion_lib.get_motion_state(self.all_env_ids[env_ids], motion_times)  # pass in the env_ids such that the motion is in synced.
 
         self._ref_body_pos = motion_res["rg_pos"]  # HumanoidRenderEnv draws these
         body_pos = self._rigid_body_pos[env_ids]
@@ -770,9 +763,6 @@ class HumanoidPHC:
         else:
             self._motion_lib.load_motions(self.motion_sampler.sample(self.num_envs))
 
-            time = self.progress_buf * self.dt + self._motion_start_times
-            root_res = self._motion_lib.get_root_pos_smpl(self.all_env_ids, time)
-            self._global_offset[:, :2] = self._humanoid_root_states[:, :2] - root_res["root_pos"][:, :2]
             self.reset()
 
     def forward_motion_samples(self, first=False):

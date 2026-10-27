@@ -18,7 +18,15 @@ pytestmark = pytest.mark.skipif(
 def env():
     from puffer_phc.environment import make
 
-    e = make("puffer_phc", motion_file=DATA, has_self_collision=True, num_envs=4, headless=True, backend="isaacgym")
+    e = make(
+        "puffer_phc",
+        motion_file=DATA,
+        has_self_collision=True,
+        num_envs=4,
+        headless=True,
+        backend="isaacgym",
+        rew_power_coef=0.0005,  # config.ini [env.isaacgym]
+    )
     e.reset()
     return e
 

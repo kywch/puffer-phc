@@ -34,7 +34,7 @@ def make_env(backend, num_envs, **kwargs):
 
 @pytest.fixture(scope="module", params=BACKENDS, ids=lambda p: p[0])
 def env(request):
-    return make_env(request.param, 4)
+    return make_env(request.param, 4, solver_preset="isaacgym_parity_240")  # the gains and dof_force tests need gym gains
 
 
 def test_reset_envs_round_trip(env):
@@ -79,9 +79,7 @@ def test_fk_matches_motion_lib(env):
     e = env.env
     e.reset()
     ids = torch.arange(e.num_envs)
-    motion_res = e._motion_lib.get_motion_state(
-        e._reset_ref_motion_ids, e._reset_ref_motion_times, offset=e._global_offset[ids]
-    )
+    motion_res = e._motion_lib.get_motion_state(e._reset_ref_motion_ids, e._reset_ref_motion_times)
     err = (e._rigid_body_pos[ids] - motion_res["rg_pos"]).norm(dim=-1).mean().item()
     assert err < 1e-3, f"FK vs motion-lib rg_pos mean error {err * 1000:.3f} mm"
 
@@ -184,3 +182,17 @@ def test_gpu_matches_cpu():
     assert (cpu.rigid_body_pos - gpu.rigid_body_pos.cpu()).norm(dim=-1).max() < 1e-3
     # Measured: body pos 1e-6 m, torque max diff 2e-3 Nm (float32 vs MuJoCo C float64) of ~38 Nm peak
     assert torch.allclose(cpu.dof_force, gpu.dof_force.cpu(), rtol=0, atol=0.05)
+
+
+def test_episode_stats_include_terminal_step():
+    e = make_env(BACKENDS[0], 1, termination_distance=0.05)
+    zeros = np.zeros((1, *e.single_action_space.shape), np.float32)
+    rewards = []
+    while True:
+        rewards.append(e.step(zeros)[1].item())
+        if e.env.extras["terminate"].item() or len(rewards) > 200:
+            break
+    ret, length = (e._ep_stats[:2] / e._ep_stats[3]).tolist()
+    assert length == len(rewards)
+    assert ret == pytest.approx(sum(rewards), rel=1e-4)
+    assert e.episode_lengths.item() == 0

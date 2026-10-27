@@ -142,7 +142,7 @@ def gym_to_newton(drive_frame, root, dof_pos, dof_vel):
 class NewtonMujocoBackend(SimBackend):
     """What mujoco_cpu and mujoco_gpu share: preset, asset loading and the Newton ViewerGL (play mode)."""
 
-    def __init__(self, device_type, device_id, headless, solver_preset="isaacgym_parity_240"):
+    def __init__(self, device_type, device_id, headless, solver_preset):
         super().__init__(device_type, device_id)
         self.preset = SOLVER_PRESETS[solver_preset]
         self.headless = headless
