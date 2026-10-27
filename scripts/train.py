@@ -592,6 +592,8 @@ if __name__ == "__main__":
     if args["motion_file"]:
         args["env"]["motion_file"] = args["motion_file"]
 
+    args["env"]["use_amp_obs"] = args["train"]["amp_reward_coef"] > 0
+
     # If play, change these env args
     if args["mode"] == "play":
         args["env"]["num_envs"] = 16
@@ -613,7 +615,9 @@ if __name__ == "__main__":
 
     if args["checkpoint_path"]:
         checkpoint = torch.load(args["checkpoint_path"], map_location=device, weights_only=False)
-        policy.load_state_dict(checkpoint["state_dict"])
+        res = policy.load_state_dict(checkpoint["state_dict"], strict=False)
+        # only the discriminator may differ between an AMP and a non-AMP run
+        assert all("disc" in k or "amp_obs_norm" in k for k in res.missing_keys + res.unexpected_keys), res
         print(f"Loaded checkpoint from {args['checkpoint_path']}")
 
     # Train or evaluate

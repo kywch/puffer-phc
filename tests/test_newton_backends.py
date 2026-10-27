@@ -79,7 +79,7 @@ def test_fk_matches_motion_lib(env):
     e = env.env
     e.reset()
     ids = torch.arange(e.num_envs)
-    motion_res = e._motion_lib.get_motion_state(e._reset_ref_motion_ids, e._reset_ref_motion_times)
+    motion_res = e._motion_lib.get_motion_state(e.all_env_ids, e._motion_start_times)
     err = (e._rigid_body_pos[ids] - motion_res["rg_pos"]).norm(dim=-1).mean().item()
     assert err < 1e-3, f"FK vs motion-lib rg_pos mean error {err * 1000:.3f} mm"
 
@@ -196,3 +196,37 @@ def test_episode_stats_include_terminal_step():
     assert length == len(rewards)
     assert ret == pytest.approx(sum(rewards), rel=1e-4)
     assert e.episode_lengths.item() == 0
+
+
+def test_amp_obs(monkeypatch):
+    np.random.seed(0), torch.manual_seed(0)
+    e = make_env(BACKENDS[0], 4, use_amp_obs=True, termination_distance=0.05)
+    g, ids = e.env, torch.arange(4)
+    # right after reset(): the sim's current obs vs the reference at the start time
+    ref = g._get_amp_obs(ids, g._motion_start_times)
+    groups = {"root_h": (0, 1), "root_rot": (1, 7), "root_vel": (7, 10), "root_ang_vel": (10, 13),
+              "dof_pos": (13, 127), "dof_vel": (127, 184), "key_pos": (184, 196)}
+    diff = {k: (e.amp_obs[:, a:b] - ref[:, a:b]).abs().max().item() for k, (a, b) in groups.items()}
+    assert all(d < (2e-3 if k == "key_pos" else 1e-5) for k, d in diff.items()), diff  # measured: <= 1.1e-6, key_pos 6.4e-4 (FK)
+    # demo frame k is the reference at t - k*dt (root height read straight from the motion lib; t clear of the clamp)
+    with monkeypatch.context() as mp:
+        mp.setattr(torch, "randint", lambda *a, **k: ids)
+        mp.setattr(torch, "rand", lambda n, **k: torch.full((n,), 0.5))
+        demo = g.fetch_amp_obs_demo(4).view(4, 10, -1)
+    t = 0.5 * g._motion_lib._motion_lengths[:4]
+    for k in range(10):
+        z = g._motion_lib.get_motion_state(ids, t - k * g.dt)["rg_pos"][:, 0, 2]
+        assert torch.allclose(demo[:, k, 0], z, atol=1e-5), k
+    # every step rolls the history by one frame; a terminated env's history is then refilled from the reference
+    for _ in range(300):
+        prev = g._amp_obs_buf.clone()
+        e.step(np.random.uniform(-1, 1, (4, *e.single_action_space.shape)).astype(np.float32))
+        out, buf, done = e.amp_obs.view(4, 10, -1), g._amp_obs_buf, e.terminals | e.truncations
+        assert torch.equal(out[:, 1:], prev[:, :-1])  # also the terminal (pre-reset) rows of done envs
+        assert torch.equal(buf[~done], out[~done])  # the refill leaves the other envs alone
+        if done.any() and not done.all():
+            break
+    assert done.any() and not done.all()
+    assert torch.allclose(buf[done, 1:], g._get_amp_obs_hist(ids, g._motion_start_times, 1)[done], atol=1e-5)
+    d0, d1 = g.fetch_amp_obs_demo(8), g.fetch_amp_obs_demo(8)
+    assert d0.shape == (8, 1960) and d0.isfinite().all() and not torch.equal(d0, d1)

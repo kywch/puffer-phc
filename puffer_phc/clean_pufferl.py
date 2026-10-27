@@ -58,6 +58,7 @@ def create(config, vecenv, policy, optimizer=None, run=None):
         lstm,
         total_agents,
         use_amp_obs,
+        vecenv.amp_observation_space.shape[0] if use_amp_obs else 0,
     )
 
     uncompiled_policy = policy
@@ -185,32 +186,25 @@ def train(data):
         experience.flatten_batch()
 
         if data.use_amp_obs:
-            amp_obs_demo = data.vecenv.fetch_amp_obs_demo()  # [num_envs, amp_obs_size]
-            amp_minibatch_size = amp_obs_demo.shape[0]
+            amp_minibatch_size = data.vecenv.num_agents
+            amp_obs_demo = data.vecenv.fetch_amp_obs_demo(amp_minibatch_size)  # [num_envs, amp_obs_size]
 
-    # Compute adversarial reward. Note: discriminator doesn't get
+    # Style reward, in the same (env-sorted) order as rewards_np. Note: the discriminator doesn't get
     # updated as often this way, but GAE is more accurate
-    adversarial_reward = torch.zeros(experience.num_minibatches, config.minibatch_size).to(config.device)
-
     discriminate = getattr(data.policy.policy, "discriminate", None)
     if data.use_amp_obs and discriminate is not None:
         with torch.no_grad():
-            for mb in range(experience.num_minibatches):
-                disc_logits = discriminate(experience.b_amp_obs[mb]).squeeze()
-                prob = 1 / (1 + torch.exp(-disc_logits))
-                adversarial_reward[mb] = -torch.log(torch.maximum(1 - prob, torch.tensor(0.0001, device=config.device)))
-
-    # TODO: Nans in adversarial reward and gae
-    adversarial_reward_np = adversarial_reward.cpu().numpy().ravel()
+            logits = torch.cat(
+                [discriminate(experience.amp_obs[i]).squeeze(-1) for i in idxs.split(config.minibatch_size)]
+            )
+            style_reward = -torch.log(torch.clamp(1 - torch.sigmoid(logits), min=1e-4))
+        rewards_np = rewards_np + config.amp_reward_coef * style_reward.cpu().numpy()
 
     # For motion imitation, done is True ONLY when the env is terminated early.
     # Successful replay of motions will get done=False, truncation=True
     # Since gae is using only dones, the advantages for truncated steps are
     # computed as the same as the nonterminal steps.
-    # NOTE: The imitation reward and adversarial reward are equally weighted.
-    advantages_np = compute_gae(
-        dones_np, values_np, rewards_np + adversarial_reward_np, config.gamma, config.gae_lambda
-    )
+    advantages_np = compute_gae(dones_np, values_np, rewards_np, config.gamma, config.gae_lambda)
 
     advantages = torch.as_tensor(advantages_np).to(config.device)
     experience.b_advantages = (
@@ -293,12 +287,17 @@ def train(data):
                 disc_loss = 0.0
                 if data.use_amp_obs:
                     disc_agent_logits = discriminate(amp_obs_agent)
-                    disc_demo_logits = discriminate(amp_obs_demo)
+                    # Gradient penalty on the demo samples, w.r.t. the normalized discriminator input
+                    disc_net = discriminate.__self__  # the policy owning the disc layers, also under Recurrent
+                    demo_in = disc_net.amp_obs_norm(amp_obs_demo).requires_grad_()
+                    disc_demo_logits = disc_net._disc_logits(disc_net._disc_mlp(demo_in))
+                    (demo_grad,) = torch.autograd.grad(disc_demo_logits.sum(), demo_in, create_graph=True)
                     disc_loss_agent = torch.nn.BCEWithLogitsLoss()(
                         disc_agent_logits, torch.zeros_like(disc_agent_logits)
                     )
                     disc_loss_demo = torch.nn.BCEWithLogitsLoss()(disc_demo_logits, torch.ones_like(disc_demo_logits))
                     disc_loss = 0.5 * (disc_loss_agent + disc_loss_demo)
+                    disc_loss += config.disc_grad_penalty * demo_grad.pow(2).sum(-1).mean()
 
                 if config.disc_coef > 0:
                     loss += disc_loss * config.disc_coef
@@ -509,7 +508,7 @@ class Experience:
         lstm=None,
         lstm_total_agents=0,
         use_amp_obs=False,
-        amp_obs_size=1960,
+        amp_obs_size=0,
         amp_obs_update_prob=0.01,
     ):
         if minibatch_size is None:

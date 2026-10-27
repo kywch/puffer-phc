@@ -199,5 +199,5 @@ class PHCPufferEnv(pufferlib.PufferEnv):
 
         return [info]
 
-    def fetch_amp_obs_demo(self):
-        return self.env.fetch_amp_obs_demo()
+    def fetch_amp_obs_demo(self, n):
+        return self.env.fetch_amp_obs_demo(n)
