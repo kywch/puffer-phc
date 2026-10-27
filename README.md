@@ -53,7 +53,7 @@ The default path trains on the Newton/MuJoCo backends (Python 3.12, no Isaac Gym
 
     To prepare your own motion data, please see the `convert_amass_data.py` script in the `scripts` folder. After conversion, you can visually inspect the data with the `vis_motion_mj.py` script.
 
-5. Play the trained policy. This opens a live viewer and needs a display (Newton ViewerGL on the mujoco backends; the Isaac Gym viewer on `isaacgym`):
+5. Play the trained policy. This opens a live viewer and needs a display. On the mujoco backends (Newton ViewerGL) red markers on grey bodies show the reference motion; keys: R reset, T resample motions, K toggle markers, left/right arrows switch the followed env (mujoco_cpu shows only env 0):
     ```
     python scripts/train.py --mode play -c <CHECKPOINT PATH>
     ```
@@ -113,7 +113,7 @@ Isaac Gym (Python 3.8, pytorch 2.3.1/CUDA 12.1, Isaac Gym 1.0rc4) is kept as a l
     python scripts/train.py --config config.ini -m <MOTION FILE PATH> --env.backend isaacgym
     ```
 
-5. Play the trained policy. This opens the Isaac Gym viewer and needs a display.
+5. Play the trained policy. This opens the basic Isaac Gym viewer (no reference markers) and needs a display.
     ```
     python scripts/train.py --mode play -c <CHECKPOINT PATH> --env.backend isaacgym
     ```

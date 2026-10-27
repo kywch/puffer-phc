@@ -18,7 +18,15 @@ pytestmark = pytest.mark.skipif(
 def env():
     from puffer_phc.environment import make
 
-    e = make("puffer_phc", motion_file=DATA, has_self_collision=True, num_envs=4, headless=True, backend="isaacgym")
+    e = make(
+        "puffer_phc",
+        motion_file=DATA,
+        has_self_collision=True,
+        num_envs=4,
+        headless=True,
+        backend="isaacgym",
+        rew_power_coef=0.0005,  # config.ini [env.isaacgym]
+    )
     e.reset()
     return e
 
@@ -41,7 +49,12 @@ def test_partial_reset_leaves_other_envs_unchanged(env):
     dof_pos_before, dof_vel_before = e._dof_pos[other].clone(), e._dof_vel[other].clone()
     rb_pos_before = e._rigid_body_pos[other].clone()
 
-    e.reset(ids)
+    mask = torch.zeros(4, dtype=torch.bool, device=e.device)
+    mask[ids] = True
+    e._reset_masked(mask)
+
+    ref = e._motion_lib.get_motion_state(e.all_env_ids, e._motion_start_times)["rg_pos"]
+    assert torch.equal(e._rigid_body_pos[ids], ref[ids])  # isaacgym's refresh alone leaves the pre-reset pose
 
     assert torch.equal(e._humanoid_root_states[other], root_before)
     assert torch.equal(e._dof_pos[other], dof_pos_before)

@@ -75,9 +75,9 @@ class PhaseTimer:
         e, b = env.env, env.env.backend
         nc = sys.modules.get("puffer_phc.backend._newton_mujoco")
         targets = [(env, "step", "PHCPufferEnv.step"), (e, "step", "HumanoidPHC.step")]
-        targets += [(e, m, m) for m in ("_action_to_pd_targets", "_compute_reward", "_compute_reset", "_reset_actors")]
+        targets += [(e, m, m) for m in ("_compute_reward", "_compute_reset", "_reset_masked")]
         targets += [(e, m, m) for m in ("_compute_observations", "_compute_humanoid_obs", "_compute_task_obs")]
-        targets += [(e, "reset", "HumanoidPHC.reset"), (e, "_get_state_from_motionlib_cache", "_motion_cache")]
+        targets += [(e, "reset", "HumanoidPHC.reset")]
         targets += [(e._motion_lib, "get_motion_state", "motion_lib.get_motion_state")]
         targets += [(b, m, f"backend.{m}") for m in ("step", "simulate", "refresh", "reset_envs")]
         targets += [(nc, "pd_targets_to_newton", "nc.pd_targets_to_newton")] if nc else []
@@ -215,6 +215,8 @@ def main():
     device = "cpu" if args.backend == "mujoco_cpu" else "cuda"
     kwargs = dict(motion_file=args.motion_file, has_self_collision=True, num_envs=n, device_type=device)
     kwargs.update(backend=args.backend, headless=True, solver_preset=preset)  # isaacgym ignores the preset
+    if args.backend == "isaacgym":
+        kwargs["rew_power_coef"] = 0.0005  # config.ini [env.isaacgym]
     free0 = torch.cuda.mem_get_info()[0]
     env = pufferlib.vector.make(env_creator(), env_kwargs=kwargs)
     env.async_reset(args.seed)

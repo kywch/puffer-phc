@@ -303,15 +303,6 @@ def transform_translation(x):
 
 
 @torch.jit.script
-def transform_inverse(x):
-    """
-    Inverse transformation
-    """
-    inv_so3 = quat_inverse(transform_rotation(x))
-    return transform_from_rotation_translation(r=inv_so3, t=quat_rotate(inv_so3, -transform_translation(x)))
-
-
-@torch.jit.script
 def transform_mul(x, y):
     """
     Combine two transformation together

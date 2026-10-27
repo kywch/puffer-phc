@@ -232,7 +232,7 @@ class MotionLibBase:
     def get_motion_num_steps(self):
         return (self._motion_num_frames * self._sim_fps / self._motion_fps).ceil().int()
 
-    def get_motion_state(self, motion_ids, motion_times, offset=None):
+    def get_motion_state(self, motion_ids, motion_times):
         motion_len = self._motion_lengths[motion_ids]
         num_frames = self._motion_num_frames[motion_ids]
         dt = self._motion_dt[motion_ids]
@@ -262,8 +262,6 @@ class MotionLibBase:
         heading = self._heading[motion_ids, None]
 
         rg_pos = _yaw_rotate(heading, (1.0 - blend_exp) * rg_pos0 + blend_exp * rg_pos1)
-        if offset is not None:
-            rg_pos = rg_pos + offset[..., None, :]  # ZL: apply offset
 
         body_vel = _yaw_rotate(heading, (1.0 - blend_exp) * body_vel0 + blend_exp * body_vel1)
         body_ang_vel = _yaw_rotate(heading, (1.0 - blend_exp) * body_ang_vel0 + blend_exp * body_ang_vel1)
@@ -291,25 +289,6 @@ class MotionLibBase:
             "motion_bodies": self._motion_bodies[motion_ids],
             "motion_limb_weights": self._motion_limb_weights[motion_ids],
         }
-
-    def get_root_pos_smpl(self, motion_ids, motion_times):
-        motion_len = self._motion_lengths[motion_ids]
-        num_frames = self._motion_num_frames[motion_ids]
-        dt = self._motion_dt[motion_ids]
-
-        frame_idx0, frame_idx1, blend = self._calc_frame_blend(motion_times, motion_len, num_frames, dt)
-        f0l = frame_idx0 + self.length_starts[motion_ids]
-        f1l = frame_idx1 + self.length_starts[motion_ids]
-
-        rg_pos0 = self.gts[f0l, :]
-        rg_pos1 = self.gts[f1l, :]
-
-        blend = blend.unsqueeze(-1)
-
-        blend_exp = blend.unsqueeze(-1)
-
-        rg_pos = (1.0 - blend_exp) * rg_pos0 + blend_exp * rg_pos1  # ZL: apply offset
-        return {"root_pos": _yaw_rotate(self._heading[motion_ids], rg_pos[..., 0, :])}
 
     def _calc_frame_blend(self, time, len, num_frames, dt):
         time = time.clone()

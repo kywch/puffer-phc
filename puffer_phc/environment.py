@@ -29,7 +29,7 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         device_id=0,
         headless=True,
         log_interval=32,
-        rew_power_coef=0.0005,
+        rew_power_coef=0.0001,
         use_amp_obs=False,
         motion_sampling="pmcp",
         pmcp_alpha=0.2,
@@ -39,7 +39,7 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         kp_scale=1.0,
         kd_scale=1.0,
         backend="mujoco_gpu",
-        solver_preset="isaacgym_parity_240",
+        solver_preset="newton_120",
     ):
         self.render_mode = "native"
         cfg = {
@@ -63,12 +63,10 @@ class PHCPufferEnv(pufferlib.PufferEnv):
             },
             "exp_name": exp_name,
         }
-        # isaacgym's live rendering needs its own env/viewer wiring (HumanoidRenderEnv); the Newton-based backends
-        # render through backend.render() instead, so plain HumanoidPHC handles headless=False for them too.
-        if headless or backend != "isaacgym":
+        if headless or backend == "isaacgym":  # isaacgym play uses its backend viewer
             self.env = HumanoidPHC(cfg, device_type=device_type, device_id=device_id, headless=headless)
         else:
-            from puffer_phc.render_env import HumanoidRenderEnv
+            from puffer_phc.render_env import HumanoidRenderEnv  # imports pyglet: play mode only
 
             self.env = HumanoidRenderEnv(cfg, device_type=device_type, device_id=device_id, headless=headless)
 
@@ -112,6 +110,8 @@ class PHCPufferEnv(pufferlib.PufferEnv):
 
         # Clear the buffers
         self.rewards[:] = 0
+        self.episode_returns[:] = 0
+        self.episode_lengths[:] = 0
         self.terminals[:] = False
         self.truncations[:] = False
         self.masks[:] = True
@@ -144,15 +144,14 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         self.terminals[:] = self.env.extras["terminate"]
         self.truncations[:] = done & ~self.terminals
         self.masks[:] = ~self.truncations
+        self.episode_returns += self.rewards
+        self.episode_lengths += 1
         stats = torch.stack([self.episode_returns, self.episode_lengths, self.truncations, done]).double()
         self._ep_stats += stats @ done.double()
 
         self._episode_count += done.sum()
         self.episode_returns.masked_fill_(done, 0)
         self.episode_lengths.masked_fill_(done, 0)
-
-        self.episode_returns += self.rewards * ~self.env.reset_buf
-        self.episode_lengths += ~self.env.reset_buf
 
         # TODO: self.env.extras has infos. Extract useful info?
         info = []

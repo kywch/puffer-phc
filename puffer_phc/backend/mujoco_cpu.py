@@ -18,7 +18,7 @@ from puffer_phc.backend import _newton_mujoco as nc
 
 
 class MujocoCPUBackend(nc.NewtonMujocoBackend):
-    def create_envs(self, num_envs, env_spacing, kp_scale, kd_scale, has_self_collision, build_extras=None):
+    def create_envs(self, num_envs, env_spacing, kp_scale, kd_scale, has_self_collision):
         self.num_envs = num_envs
         self.model = nc.build_model(
             self._xml, self.body_names, self.preset, 1, "cpu", kp_scale, kd_scale, has_self_collision

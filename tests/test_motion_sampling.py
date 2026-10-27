@@ -166,12 +166,9 @@ def test_heading_at_query_time_matches_baked():
         return m
 
     query, old = lib(heading, store), lib(torch.tensor([[0.0, 0, 0, 1]]).repeat(n, 1), {**store, **baked})
-    ids, t, offset = torch.arange(n), torch.tensor([0.05, 0.11, 0.2]), torch.randn(n, 3, generator=g)
-    a, b = query.get_motion_state(ids, t, offset), old.get_motion_state(ids, t, offset)
+    ids, t = torch.arange(n), torch.tensor([0.05, 0.11, 0.2])
+    a, b = query.get_motion_state(ids, t), old.get_motion_state(ids, t)
     assert all(torch.allclose(a[k], b[k], atol=1e-5) for k in a)
-    assert torch.allclose(
-        query.get_root_pos_smpl(ids, t)["root_pos"], old.get_root_pos_smpl(ids, t)["root_pos"], atol=1e-5
-    )
 
 
 def test_processed_motion_cache(tmp_path, monkeypatch):

@@ -25,7 +25,7 @@ class MujocoGPUBackend(nc.NewtonMujocoBackend):
         assert device_type == "cuda", "the mujoco_gpu backend needs device_type=cuda"
         super().__init__(device_type, *args, **kwargs)
 
-    def create_envs(self, num_envs, env_spacing, kp_scale, kd_scale, has_self_collision, build_extras=None):
+    def create_envs(self, num_envs, env_spacing, kp_scale, kd_scale, has_self_collision):
         n = self.num_envs = num_envs
         # One stream for torch and warp keeps their work ordered; CUDA graphs can't capture torch's legacy stream.
         torch.cuda.synchronize(self.device)
