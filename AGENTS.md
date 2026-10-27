@@ -78,6 +78,10 @@ pixi run python scripts/train.py --mode eval -c ckpt_amass_800m_acc97.pt -m data
 # Tests (both envs define `test`, so -e is required)
 pixi run -e default test
 pixi run -e isaacgym test
+
+# Lint/format: ruff check + ruff format run as a git pre-commit hook (.pre-commit-config.yaml); install once per clone
+pixi run pre-commit install
+pixi run pre-commit run --all-files  # run by hand
 ```
 
 Any `[section] key` in `config.ini` can be overridden as `--section.key-name`. `[<section>.<backend>]` overrides the `[env]` and `[train]` keys for that backend, e.g. `[env.isaacgym]` (`rew_power_coef = 0.0005`) and `[train.isaacgym]` (`optimizer = "adam"`, because the isaacgym env's torch 2.3.1 has no `torch.optim.Muon`; `[train] optimizer = "muon"` is the default). CLI flags still win. Add `--track` to log locally to Aim under `experiments/.aim`; view with `pixi run aim up --repo experiments --host 127.0.0.1 --port 43800`. Merge runs from another machine: `pixi run aim runs --repo <other>/experiments cp --destination experiments <run_hash>`. `--mode sweep` requires `--tag <name>` (every trial is tracked and tagged); filter in the Aim UI/search with `"<name>" in run.tags`.
