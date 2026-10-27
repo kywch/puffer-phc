@@ -63,12 +63,10 @@ class PHCPufferEnv(pufferlib.PufferEnv):
             },
             "exp_name": exp_name,
         }
-        # isaacgym's live rendering needs its own env/viewer wiring (HumanoidRenderEnv); the Newton-based backends
-        # render through backend.render() instead, so plain HumanoidPHC handles headless=False for them too.
-        if headless or backend != "isaacgym":
+        if headless or backend == "isaacgym":  # isaacgym play uses its backend viewer
             self.env = HumanoidPHC(cfg, device_type=device_type, device_id=device_id, headless=headless)
         else:
-            from puffer_phc.render_env import HumanoidRenderEnv
+            from puffer_phc.render_env import HumanoidRenderEnv  # imports pyglet: play mode only
 
             self.env = HumanoidRenderEnv(cfg, device_type=device_type, device_id=device_id, headless=headless)
 

@@ -75,9 +75,9 @@ class PhaseTimer:
         e, b = env.env, env.env.backend
         nc = sys.modules.get("puffer_phc.backend._newton_mujoco")
         targets = [(env, "step", "PHCPufferEnv.step"), (e, "step", "HumanoidPHC.step")]
-        targets += [(e, m, m) for m in ("_action_to_pd_targets", "_compute_reward", "_compute_reset", "_reset_actors")]
+        targets += [(e, m, m) for m in ("_compute_reward", "_compute_reset", "_reset_actors")]
         targets += [(e, m, m) for m in ("_compute_observations", "_compute_humanoid_obs", "_compute_task_obs")]
-        targets += [(e, "reset", "HumanoidPHC.reset"), (e, "_get_state_from_motionlib_cache", "_motion_cache")]
+        targets += [(e, "reset", "HumanoidPHC.reset")]
         targets += [(e._motion_lib, "get_motion_state", "motion_lib.get_motion_state")]
         targets += [(b, m, f"backend.{m}") for m in ("step", "simulate", "refresh", "reset_envs")]
         targets += [(nc, "pd_targets_to_newton", "nc.pd_targets_to_newton")] if nc else []

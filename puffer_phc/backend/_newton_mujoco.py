@@ -105,7 +105,6 @@ def gym_tensors(n, num_bodies, num_dof, device):
         # Applied PD torque (MuJoCo child-frame ball DOFs). Gym's dof_force_tensor is not the drive torque
         # (measured 4-8x smaller RMS), so a power reward from this differs; eval does not use it.
         dof_force=torch.zeros(n, num_dof, device=device),
-        contact_forces=torch.zeros(n, num_bodies, 3, device=device),  # unused
     )
 
 
@@ -178,8 +177,9 @@ class NewtonMujocoBackend(SimBackend):
         self.viewer.set_model(self.model)
         self._viewer_state, self._render_t, self._wall_t0 = state, 0.0, None
 
-    def render(self):
-        """Pump one viewer frame. Exits the process once the window is closed, like the isaacgym backend."""
+    def render(self, extra=None):
+        """Pump one viewer frame; extra(viewer), if given, draws into it. Exits the process once the window is closed,
+        like the isaacgym backend."""
         if self.viewer is None:
             return
         if not self.viewer.is_running():
@@ -187,6 +187,8 @@ class NewtonMujocoBackend(SimBackend):
             sys.exit()
         self.viewer.begin_frame(self._render_t)
         self.viewer.log_state(self._viewer_state)
+        if extra:
+            extra(self.viewer)
         self.viewer.end_frame()
         self._render_t += self.dt
         # Real-time playback: one frame per control step (1/30 s), so vsync alone (60 Hz) would play at 2x

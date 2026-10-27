@@ -13,7 +13,7 @@ class SimBackend(ABC):
       root_states [N,13]: pos, quat xyzw, world lin vel, world ang vel
       dof_pos, dof_vel [N,69]: per-joint rotation vectors (gym spherical joints) and their rates
       rigid_body_pos [N,24,3], rigid_body_rot [N,24,4] xyzw, rigid_body_vel (world COM), rigid_body_ang_vel (world)
-      dof_force [N,69]: applied PD torque; contact_forces [N,24,3] (may stay zero)
+      dof_force [N,69]: applied PD torque
     HumanoidPHC keeps references to these tensors: update them in place, never rebind them.
     """
 
@@ -26,8 +26,8 @@ class SimBackend(ABC):
     def load_asset(self, asset_file): ...
 
     @abstractmethod
-    def create_envs(self, num_envs, env_spacing, kp_scale, kd_scale, has_self_collision, build_extras=None):
-        """build_extras(env_id, env_ptr) is a gym-only hook (render env markers); other backends ignore it."""
+    def create_envs(self, num_envs, env_spacing, kp_scale, kd_scale, has_self_collision):
+        """Create the envs and wrap the state tensors."""
 
     @abstractmethod
     def step(self, pd_targets):

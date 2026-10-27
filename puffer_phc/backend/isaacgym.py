@@ -85,9 +85,8 @@ class IsaacGymBackend(SimBackend):
         self.body_names = [self.gym.get_asset_rigid_body_name(self.humanoid_asset, i) for i in range(self.num_bodies)]
         self.dof_props = self.gym.get_asset_dof_properties(self.humanoid_asset)
 
-    def create_envs(self, num_envs, env_spacing, kp_scale, kd_scale, has_self_collision, build_extras=None):
-        """Create ground, envs with one PD-driven humanoid each, then prepare the sim and wrap its tensors.
-        build_extras(env_id, env_ptr) lets the render env add marker actors to each env."""
+    def create_envs(self, num_envs, env_spacing, kp_scale, kd_scale, has_self_collision):
+        """Create ground, envs with one PD-driven humanoid each, then prepare the sim and wrap its tensors."""
         self.num_envs = num_envs
 
         plane_params = gymapi.PlaneParams()
@@ -120,8 +119,6 @@ class IsaacGymBackend(SimBackend):
             self.gym.begin_aggregate(env_ptr, max_agg_bodies, max_agg_shapes, True)
 
             self._build_humanoid(i, env_ptr, dof_prop, has_self_collision)
-            if build_extras is not None:
-                build_extras(i, env_ptr)
 
             self.gym.end_aggregate(env_ptr)
             self.envs.append(env_ptr)
@@ -177,7 +174,6 @@ class IsaacGymBackend(SimBackend):
         actor_root_state = self.gym.acquire_actor_root_state_tensor(self.sim)
         dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)
         rigid_body_state = self.gym.acquire_rigid_body_state_tensor(self.sim)
-        contact_force_tensor = self.gym.acquire_net_contact_force_tensor(self.sim)
 
         dof_force_tensor = self.gym.acquire_dof_force_tensor(self.sim)
         self.dof_force = gymtorch.wrap_tensor(dof_force_tensor).view(self.num_envs, self.num_dof)
@@ -205,17 +201,11 @@ class IsaacGymBackend(SimBackend):
         self.rigid_body_vel = rigid_body_state[..., : self.num_bodies, 7:10]
         self.rigid_body_ang_vel = rigid_body_state[..., : self.num_bodies, 10:13]
 
-        contact_force_tensor = gymtorch.wrap_tensor(contact_force_tensor)
-        self.contact_forces = contact_force_tensor.view(self.num_envs, bodies_per_env, 3)[..., : self.num_bodies, :]
-
     def refresh(self):
         self.gym.refresh_dof_state_tensor(self.sim)
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self.gym.refresh_rigid_body_state_tensor(self.sim)
-
-        self.gym.refresh_force_sensor_tensor(self.sim)
         self.gym.refresh_dof_force_tensor(self.sim)
-        self.gym.refresh_net_contact_force_tensor(self.sim)
 
     def simulate(self):
         self.gym.simulate(self.sim)
