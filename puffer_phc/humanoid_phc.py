@@ -81,10 +81,9 @@ class HumanoidPHC:
         self._reset_masked(everyone)
         torch.cuda.empty_cache()
 
-        self._reset_ref_motion_times = self._motion_start_times.clone()
         self._compute_observations()
         if self.use_amp_obs:
-            self._init_amp_obs(self.all_env_ids)
+            self._amp_obs_out = self._amp_obs_buf.view(-1, self.num_amp_obs).clone()
         return self.obs_buf
 
     def step(self, actions):
@@ -106,7 +105,7 @@ class HumanoidPHC:
         if self.use_amp_obs:
             self._update_hist_amp_obs()  # One step for the amp obs
             self._compute_amp_observations()
-            self.extras["amp_obs"] = self.amp_obs  ## ZL: hooks for adding amp_obs for training
+            self._amp_obs_out = self._amp_obs_buf.view(-1, self.num_amp_obs).clone()  # before the reset rewrites rows
 
         if self.flag_test:
             self.extras["body_pos"] = self._rigid_body_pos.clone()  # _reset_masked below overwrites it in place
@@ -115,7 +114,6 @@ class HumanoidPHC:
         done = self.reset_buf.clone()
         if not self.flag_test:
             self.start_sampler.record(self._motion_lib._curr_motion_ids, self.progress_buf, done, self._terminate_buf)
-        assert not self.use_amp_obs, "the masked reset has no AMP init"
         self._reset_masked(done)
         self._compute_observations()  # observation for the next step, after the reset
 
@@ -358,10 +356,7 @@ class HumanoidPHC:
         self.extras = {}  # Stores info
 
         # AMP/Motion-related
-        self._reset_default_env_ids = []
         self._motion_start_times = torch.zeros(self.num_envs).to(self.device)
-        # reset() resets every env to its motion's start state: what _init_amp_obs and the tests read
-        self._reset_ref_env_ids = self._reset_ref_motion_ids = self.all_env_ids
 
         self._amp_obs_buf = torch.zeros(
             (self.num_envs, self._num_amp_obs_steps, self._num_amp_obs_per_step),
@@ -370,11 +365,7 @@ class HumanoidPHC:
         )
         self._curr_amp_obs_buf = self._amp_obs_buf[:, 0]
         self._hist_amp_obs_buf = self._amp_obs_buf[:, 1:]
-
-        # amp_obs_demo_buf is fed into the discriminator training as the real motion data
-        # This replaces the demo replay buffer in the original PHC code
-        # amp_batch_size is fixed to the number of envs
-        self._amp_obs_demo_buf = torch.zeros_like(self._amp_obs_buf)
+        self._amp_obs_out = None  # the rows step() exposes: reset() and step() overwrite it
 
     def _load_motion(self, motion_train_file):
         motion_lib_cfg = SimpleNamespace(
@@ -424,31 +415,18 @@ class HumanoidPHC:
         for buf in (self.progress_buf, self.reset_buf, self._terminate_buf):
             buf.masked_fill_(mask, 0)
         self.backend.refresh_reset(mask, res)  # rigid body state of the reset envs comes from the sim's FK
+        if self.use_amp_obs:
+            # Current obs from the post-reset sim, history from the reference before the start time
+            self._compute_amp_observations()
+            ref = self._get_amp_obs_hist(ids, times, 1)
+            self._hist_amp_obs_buf[:] = torch.where(m[..., None], ref, self._hist_amp_obs_buf)
 
-    def _init_amp_obs(self, env_ids):
-        self._compute_amp_observations(env_ids)
-
-        if len(self._reset_default_env_ids) > 0:
-            raise NotImplementedError("Not tested yet")
-
-        if len(self._reset_ref_env_ids) > 0:
-            self._init_amp_obs_ref(self._reset_ref_env_ids, self._reset_ref_motion_ids, self._reset_ref_motion_times)
-
-    def _init_amp_obs_ref(self, env_ids, motion_ids, motion_times):
-        motion_ids = torch.tile(motion_ids.unsqueeze(-1), [1, self._num_amp_obs_steps - 1])
-        motion_times = motion_times.unsqueeze(-1)
-
-        time_steps = -self.dt * (torch.arange(0, self._num_amp_obs_steps - 1, device=self.device) + 1)
-        motion_times = motion_times + time_steps
-
-        motion_ids = motion_ids.view(-1)
-        motion_times = motion_times.view(-1)
-
-        amp_obs_demo = self._get_amp_obs(motion_ids, motion_times)
-        self._hist_amp_obs_buf[env_ids] = amp_obs_demo.view(self._hist_amp_obs_buf[env_ids].shape)
-
-        # amp_obs_demo_buf is fed into the discriminator training as the real motion data
-        self._amp_obs_demo_buf[env_ids] = self._amp_obs_buf[env_ids]
+    def _get_amp_obs_hist(self, motion_ids, motion_times, first):
+        """Reference amp obs at motion_times - k*dt for k = first..K-1: [n, K - first, per_step]"""
+        ks = torch.arange(first, self._num_amp_obs_steps, device=self.device)
+        times = motion_times[:, None] - self.dt * ks
+        ids = motion_ids[:, None].expand_as(times)
+        return self._get_amp_obs(ids.reshape(-1), times.reshape(-1)).view(len(motion_ids), len(ks), -1)
 
     def _get_amp_obs(self, motion_ids, motion_times):
         motion_res = self._motion_lib.get_motion_state(motion_ids, motion_times)
@@ -522,58 +500,22 @@ class HumanoidPHC:
             motion_res["body_ang_vel"],
         )
 
-    def _compute_amp_observations(self, env_ids=None):
+    def _compute_amp_observations(self):
         key_body_pos = self._rigid_body_pos[:, self._key_body_ids, :]
         key_body_vel = self._rigid_body_vel[:, self._key_body_ids, :]
-
-        # assert self.humanoid_type == "smpl"
-        if self.dof_subset is None:
-            # ZL hack
-            (
-                self._dof_pos[:, 9:12],
-                self._dof_pos[:, 21:24],
-                self._dof_pos[:, 51:54],
-                self._dof_pos[:, 66:69],
-            ) = 0, 0, 0, 0
-            (
-                self._dof_vel[:, 9:12],
-                self._dof_vel[:, 21:24],
-                self._dof_vel[:, 51:54],
-                self._dof_vel[:, 66:69],
-            ) = 0, 0, 0, 0
-
-        if env_ids is None:
-            # TODO: revisit constant args
-            self._curr_amp_obs_buf[:] = self._compute_amp_observations_from_state(
-                self._rigid_body_pos[:, 0, :],
-                self._rigid_body_rot[:, 0, :],
-                self._rigid_body_vel[:, 0, :],
-                self._rigid_body_ang_vel[:, 0, :],
-                self._dof_pos,
-                self._dof_vel,
-                key_body_pos,
-                key_body_vel,
-                self.humanoid_shapes,
-                self.humanoid_limb_and_weights,
-                self.dof_subset,
-            )
-        else:
-            if len(env_ids) == 0:
-                return
-
-            self._curr_amp_obs_buf[env_ids] = self._compute_amp_observations_from_state(
-                self._rigid_body_pos[env_ids][:, 0, :],
-                self._rigid_body_rot[env_ids][:, 0, :],
-                self._rigid_body_vel[env_ids][:, 0, :],
-                self._rigid_body_ang_vel[env_ids][:, 0, :],
-                self._dof_pos[env_ids],
-                self._dof_vel[env_ids],
-                key_body_pos[env_ids],
-                key_body_vel[env_ids],
-                self.humanoid_shapes[env_ids],
-                self.humanoid_limb_and_weights[env_ids],
-                self.dof_subset,
-            )
+        self._curr_amp_obs_buf[:] = self._compute_amp_observations_from_state(
+            self._rigid_body_pos[:, 0, :],
+            self._rigid_body_rot[:, 0, :],
+            self._rigid_body_vel[:, 0, :],
+            self._rigid_body_ang_vel[:, 0, :],
+            self._dof_pos,
+            self._dof_vel,
+            key_body_pos,
+            key_body_vel,
+            self.humanoid_shapes,
+            self.humanoid_limb_and_weights,
+            self.dof_subset,
+        )
 
     def _compute_amp_observations_from_state(
         self,
@@ -659,16 +601,8 @@ class HumanoidPHC:
     def set_termination_distances(self, termination_distances):
         self._termination_distances[:] = termination_distances
 
-    def _update_hist_amp_obs(self, env_ids=None):
-        if env_ids is None:
-            # Got RuntimeError: unsupported operation: some elements of the input tensor and the written-to tensor refer to a single memory location. Please clone() the tensor before performing the operation.
-            try:
-                self._hist_amp_obs_buf[:] = self._amp_obs_buf[:, 0 : (self._num_amp_obs_steps - 1)]
-            except:  # noqa
-                self._hist_amp_obs_buf[:] = self._amp_obs_buf[:, 0 : (self._num_amp_obs_steps - 1)].clone()
-
-        else:
-            self._hist_amp_obs_buf[env_ids] = self._amp_obs_buf[env_ids, 0 : (self._num_amp_obs_steps - 1)]
+    def _update_hist_amp_obs(self):
+        self._hist_amp_obs_buf[:] = self._amp_obs_buf[:, :-1].clone()  # the two views overlap
 
     #####################################################################
     ### Motion/AMP
@@ -676,10 +610,13 @@ class HumanoidPHC:
 
     @property
     def amp_obs(self):
-        return self._amp_obs_buf.view(-1, self.num_amp_obs) if self.use_amp_obs else None
+        return self._amp_obs_out if self.use_amp_obs else None
 
-    def fetch_amp_obs_demo(self):
-        return self._amp_obs_demo_buf.view(-1, self.num_amp_obs) if self.use_amp_obs else None
+    def fetch_amp_obs_demo(self, n):
+        """n fresh demo amp obs (index 0 = latest, as in the agent's layout) from random loaded motions"""
+        ids = torch.randint(0, self.num_envs, (n,), device=self.device)
+        times = torch.rand(n, device=self.device) * self._motion_lib._motion_lengths[ids]  # early times clamp like the agent's
+        return self._get_amp_obs_hist(ids, times, 0).reshape(n, self.num_amp_obs)
 
     def resample_motions(self):
         if self.flag_test:
