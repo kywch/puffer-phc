@@ -88,6 +88,7 @@ class HumanoidPHC:
 
     def step(self, actions):
         self.backend.step(self._pd_action_scale * actions)
+        self._prev_action[:] = actions  # zeroed for the envs reset below
 
         ### Compute observations, rewards, resets, which was self.post_physics_step()
         # This is after stepping, so progress buffer got + 1. Compute reset/reward do not need to forward 1 timestep since they are for "this" frame now.
@@ -301,6 +302,8 @@ class HumanoidPHC:
 
         self.num_obs = self._num_self_obs + self._task_obs_size  # = 934
         assert self.num_obs == 934
+        self.obs_prev_action = self.cfg["env"]["obs_prev_action"]
+        self.num_obs += self.num_dof * self.obs_prev_action  # the previous action goes last
 
         # AMP obs
         self._dof_obs_size = len(self._dof_names) * 6
@@ -342,6 +345,7 @@ class HumanoidPHC:
 
     def _setup_env_buffers(self):
         self.obs_buf = torch.zeros((self.num_envs, self.num_obs), device=self.device, dtype=torch.float)
+        self._prev_action = torch.zeros((self.num_envs, self.num_actions), device=self.device)
 
         self.rew_buf = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
         # NOTE: store indiviaul reward components: the 4 imitation terms + power
@@ -414,6 +418,7 @@ class HumanoidPHC:
         self.backend.reset_envs(mask)
         for buf in (self.progress_buf, self.reset_buf, self._terminate_buf):
             buf.masked_fill_(mask, 0)
+        self._prev_action.masked_fill_(mask[:, None], 0)
         self.backend.refresh_reset(mask, res)  # rigid body state of the reset envs comes from the sim's FK
         if self.use_amp_obs:
             # Current obs from the post-reset sim, history from the reference before the start time
@@ -465,7 +470,7 @@ class HumanoidPHC:
         imitation = self._compute_task_obs()
 
         # Possible the original paper only uses imitation
-        obs = torch.cat([state, imitation], dim=-1)
+        obs = torch.cat([state, imitation, self._prev_action[:, : self.num_obs - 934]], dim=-1)
         self.obs_buf[:] = obs
 
         return obs

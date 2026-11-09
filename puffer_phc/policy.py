@@ -121,6 +121,26 @@ class PolicyWithDiscriminator(nn.Module):
         return mu_loss.mean()
 
 
+def phc_critic(input_size, hidden_size):
+    # NOTE: Original PHC network + LayerNorm
+    return nn.Sequential(
+        layer_init(nn.Linear(input_size, 2048)),
+        nn.SiLU(),
+        layer_init(nn.Linear(2048, 1536)),
+        nn.SiLU(),
+        layer_init(nn.Linear(1536, 1024)),
+        nn.SiLU(),
+        layer_init(nn.Linear(1024, 1024)),
+        nn.SiLU(),
+        layer_init(nn.Linear(1024, 512)),
+        nn.SiLU(),
+        layer_init(nn.Linear(512, hidden_size)),
+        nn.LayerNorm(hidden_size),
+        nn.SiLU(),
+        layer_init(nn.Linear(hidden_size, 1), std=0.01),
+    )
+
+
 # NOTE: The PHC implementation, which has no LSTM. 17.0M params
 class PHCPolicy(PolicyWithDiscriminator):
     def __init__(self, env, hidden_size=512):
@@ -143,23 +163,7 @@ class PHCPolicy(PolicyWithDiscriminator):
             nn.SiLU(),
         )
 
-        # NOTE: Original PHC network + LayerNorm
-        self.critic_mlp = nn.Sequential(
-            layer_init(nn.Linear(self.input_size, 2048)),
-            nn.SiLU(),
-            layer_init(nn.Linear(2048, 1536)),
-            nn.SiLU(),
-            layer_init(nn.Linear(1536, 1024)),
-            nn.SiLU(),
-            layer_init(nn.Linear(1024, 1024)),
-            nn.SiLU(),
-            layer_init(nn.Linear(1024, 512)),
-            nn.SiLU(),
-            layer_init(nn.Linear(512, hidden_size)),
-            nn.LayerNorm(hidden_size),
-            nn.SiLU(),
-            layer_init(nn.Linear(hidden_size, 1), std=0.01),
-        )
+        self.critic_mlp = phc_critic(self.input_size, hidden_size)
 
     def encode_observations(self, obs):
         # Remember the normed obs to use in the critic
@@ -180,6 +184,50 @@ class PHCPolicy(PolicyWithDiscriminator):
             self.mean_bound_loss = self.bound_loss(mu)
 
         # NOTE: Separate critic network takes input directly
+        value = fp32(self.critic_mlp[-1], self.critic_mlp[:-1](self.obs_pointer))
+        return probs, value
+
+
+class ODEActorPolicy(PolicyWithDiscriminator):
+    """mu = endpoint of da/dt = vel_scale * tanh(f(c, a)) from the previous action a0, Euler over one control step.
+    |mu - a0| <= vel_scale, and mu = a0 at init (the mu head starts near 0), so the actor starts as a hold-last-action."""
+
+    def __init__(self, env, hidden_size=512, ode_steps=4, vel_scale=0.5):
+        super().__init__(env, hidden_size)
+        assert env.obs_prev_action, "ODEActorPolicy needs the previous action in the obs: set obs_prev_action = True"
+        self.ode_steps, self.vel_scale = ode_steps, vel_scale
+        self.actor_mlp = nn.Sequential(  # obs -> condition c
+            layer_init(nn.Linear(self.input_size, 1024)),
+            nn.SiLU(),
+            layer_init(nn.Linear(1024, hidden_size)),
+            nn.LayerNorm(hidden_size),
+            nn.SiLU(),
+        )
+        self.film = layer_init(nn.Linear(hidden_size, 2 * hidden_size))  # c -> (scale, shift)
+        self.field_in = layer_init(nn.Linear(self.action_size, hidden_size))
+        self.field_hidden = nn.Sequential(nn.SiLU(), layer_init(nn.Linear(hidden_size, hidden_size)), nn.SiLU())
+        self.critic_mlp = phc_critic(self.input_size, hidden_size)
+
+    def encode_observations(self, obs):
+        self.obs_pointer = self.obs_norm(obs)
+        return self.actor_mlp(self.obs_pointer), obs[:, -self.action_size :]  # a0: raw, not normed
+
+    def decode_actions(self, hidden, a0):
+        scale, shift = self.film(hidden).chunk(2, dim=-1)  # once per step, shared by the substeps
+        a = a0.float()
+        for _ in range(self.ode_steps):
+            h = self.field_hidden(self.field_in(a) * (1 + scale) + shift)
+            a = a + self.vel_scale / self.ode_steps * torch.tanh(fp32(self.mu, h))
+        mu = a
+        std = torch.exp(self.sigma).expand_as(mu)
+
+        if self._deterministic_action is True:
+            std = torch.clamp(std, max=1e-6)
+
+        probs = Normal(mu, std, validate_args=False)
+        if self.training:
+            self.mean_bound_loss = self.bound_loss(mu)
+
         value = fp32(self.critic_mlp[-1], self.critic_mlp[:-1](self.obs_pointer))
         return probs, value
 

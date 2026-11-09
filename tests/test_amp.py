@@ -10,13 +10,13 @@ import torch
 from gymnasium import spaces
 
 from puffer_phc import clean_pufferl
-from puffer_phc.policy import PHCPolicy, Recurrent
+from puffer_phc.policy import ODEActorPolicy, PHCPolicy, Recurrent
 
 OBS, AMP, N_ENV, BATCH, MB = 24, 10, 4, 16, 8
 
 
 class StubVecenv:
-    num_agents, use_amp_obs = N_ENV, True
+    num_agents, use_amp_obs, obs_prev_action = N_ENV, True, True
     single_observation_space = spaces.Box(-1, 1, (OBS,), np.float32)
     single_action_space = spaces.Box(-1, 1, (5,), np.float32)
     amp_observation_space = spaces.Box(-np.inf, np.inf, (AMP,), np.float32)
@@ -28,7 +28,7 @@ class StubVecenv:
         return torch.randn(n, AMP) + 1
 
 
-def amp_train_data(wrapped, minibatch=MB, penalty=5.0, coef=0.5):
+def amp_train_data(wrapped, minibatch=MB, penalty=5.0, coef=0.5, cls=PHCPolicy):
     torch.manual_seed(0)
     cfg = SimpleNamespace(
         seed=0, torch_deterministic=False, batch_size=BATCH, bptt_horizon=4, minibatch_size=minibatch,
@@ -39,7 +39,7 @@ def amp_train_data(wrapped, minibatch=MB, penalty=5.0, coef=0.5):
         total_timesteps=10**9, checkpoint_interval=10**9,
     )  # fmt: skip
     env = StubVecenv()
-    policy = PHCPolicy(env, hidden_size=32)
+    policy = cls(env, hidden_size=32)
     if wrapped:
         policy = pufferlib.cleanrl.RecurrentPolicy(Recurrent(env, policy, 32, 32))
     else:
@@ -93,3 +93,11 @@ def test_disc_update_and_grad_penalty(wrapped):
     ).requires_grad_()  # the penalty: 5 * E[|grad_x D(norm(demo))|^2], at the initial weights
     (gx,) = torch.autograd.grad(init._disc_logits(init._disc_mlp(x)).sum(), x)
     assert base - data0.losses.disc_loss == pytest.approx(5 * gx.pow(2).sum(-1).mean().item(), rel=1e-3)
+
+
+def test_ode_actor_forward_and_train():
+    data, net = amp_train_data(False, cls=ODEActorPolicy)
+    probs, value = net(torch.randn(N_ENV, OBS).clamp(-1, 1))
+    a = probs.sample()
+    assert probs.log_prob(a).isfinite().all() and probs.entropy().isfinite().all() and value.isfinite().all()
+    clean_pufferl.train(data)
