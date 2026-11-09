@@ -40,6 +40,7 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         kd_scale=1.0,
         backend="mujoco_gpu",
         solver_preset="newton_120",
+        obs_prev_action=False,
     ):
         self.render_mode = "native"
         cfg = {
@@ -57,6 +58,7 @@ class PHCPufferEnv(pufferlib.PufferEnv):
                 "kd_scale": kd_scale,
                 "backend": backend,
                 "solver_preset": solver_preset,
+                "obs_prev_action": obs_prev_action,
             },
             "robot": {
                 "has_self_collision": has_self_collision,
@@ -74,6 +76,7 @@ class PHCPufferEnv(pufferlib.PufferEnv):
         self.single_action_space = self.env.single_action_space
         self.num_agents = self.num_envs = self.env.num_envs
         self.clip_actions = clip_actions
+        self.obs_prev_action = obs_prev_action
         self.device = self.env.device
 
         self.use_amp_obs = use_amp_obs
